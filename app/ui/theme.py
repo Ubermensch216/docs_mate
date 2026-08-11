@@ -50,11 +50,22 @@ CONTENT_MAX_W = 1040
 WINDOW_MIN = (1120, 720)
 
 
-def stylesheet() -> str:
+def stylesheet(large_text: bool = False) -> str:
+    """large_text=True면 본문 글자를 약 20% 키운다 (PRD §18.4 접근성).
+
+    별도 '고대비 테마'를 두지 않는 이유: 이미 상태를 색상 하나로 구분하지
+    않고 기호+글자를 함께 쓰도록 설계했다(Badge, EvidenceChip 등). 그래서
+    저시력 사용자에게 가장 먼저 도움이 되는 것은 대비 반전보다 글자 크기다.
+    """
+    scale = 1.2 if large_text else 1.0
+    body = round(FS_BODY * scale)
+    small = round(FS_SMALL * scale)
+    section = round(FS_SECTION * scale)
+    title = round(FS_TITLE * scale)
     return f"""
     * {{
         font-family: {FONT_FAMILY};
-        font-size: {FS_BODY}px;
+        font-size: {body}px;
         color: {TEXT};
     }}
     QMainWindow, QWidget#Content {{ background: {BG}; }}
@@ -65,13 +76,13 @@ def stylesheet() -> str:
         border-bottom: 1px solid {BORDER};
     }}
     QLabel#AppName {{
-        font-size: {FS_SECTION}px;
+        font-size: {section}px;
         font-weight: 600;
         color: {TEXT};
     }}
     QLabel#StatusText {{
         color: {TEXT_MUTED};
-        font-size: {FS_SMALL}px;
+        font-size: {small}px;
     }}
     QProgressBar#TopProgress {{
         background: {SURFACE_ALT};
@@ -110,25 +121,25 @@ def stylesheet() -> str:
     }}
     QLabel#NavSection {{
         color: {TEXT_DISABLED};
-        font-size: {FS_SMALL}px;
+        font-size: {small}px;
         padding: {SP_SM}px {SP_MD}px {SP_XS}px {SP_MD}px;
     }}
 
     /* ── 공통 ── */
     QLabel#ViewTitle {{
-        font-size: {FS_TITLE}px;
+        font-size: {title}px;
         font-weight: 600;
     }}
     QLabel#ViewLead {{
         color: {TEXT_MUTED};
-        font-size: {FS_BODY}px;
+        font-size: {body}px;
     }}
     QLabel#SectionTitle {{
-        font-size: {FS_SECTION}px;
+        font-size: {section}px;
         font-weight: 600;
     }}
     QLabel#Muted {{ color: {TEXT_MUTED}; }}
-    QLabel#Small {{ color: {TEXT_MUTED}; font-size: {FS_SMALL}px; }}
+    QLabel#Small {{ color: {TEXT_MUTED}; font-size: {small}px; }}
 
     QFrame#Card {{
         background: {BG};
@@ -188,7 +199,7 @@ def stylesheet() -> str:
         border-bottom: 1px solid {BORDER};
         padding: {SP_SM}px {SP_MD}px;
         color: {TEXT_MUTED};
-        font-size: {FS_SMALL}px;
+        font-size: {small}px;
         font-weight: 600;
     }}
 
@@ -211,7 +222,7 @@ def stylesheet() -> str:
     QLabel#BadgeDanger, QLabel#BadgeOk {{
         border-radius: {RADIUS_SM}px;
         padding: 2px {SP_SM}px;
-        font-size: {FS_SMALL}px;
+        font-size: {small}px;
     }}
     QLabel#BadgeNeutral   {{ background: {SURFACE_ALT}; color: {TEXT_MUTED}; }}
     QLabel#BadgeAttention {{ background: #FEF3E2; color: {ATTENTION}; }}
@@ -224,5 +235,5 @@ def stylesheet() -> str:
         border: 1px dashed {BORDER_STRONG};
         border-radius: {RADIUS_SM}px;
     }}
-    QLabel#UnknownText {{ color: {ATTENTION}; font-size: {FS_SMALL}px; }}
+    QLabel#UnknownText {{ color: {ATTENTION}; font-size: {small}px; }}
     """

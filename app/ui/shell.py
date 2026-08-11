@@ -43,9 +43,10 @@ NAV = [
 
 
 class TopBar(QWidget):
-    """분석 진행 상황이 상주하는 자리. 클릭하면 단계별 상세로 간다."""
+    """분석 진행 상황이 상주하는 자리. 누르면 단계별 상세·실패 목록으로 간다."""
 
     settings_requested = Signal()
+    status_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -68,8 +69,11 @@ class TopBar(QWidget):
         self.progress.hide()
         row.addWidget(self.progress)
 
-        self.status = QLabel("자료원이 없습니다")
-        self.status.setObjectName("StatusText")
+        self.status = QPushButton("자료원이 없습니다")
+        self.status.setObjectName("Link")
+        self.status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.status.setToolTip("눌러서 단계별 진행과 실패 목록을 봅니다")
+        self.status.clicked.connect(self.status_clicked.emit)
         row.addWidget(self.status)
 
         settings = QPushButton("⚙")
@@ -154,7 +158,10 @@ class MainWindow(QMainWindow):
 
         self.topbar = TopBar()
         self.topbar.settings_requested.connect(self._open_settings)
+        self.topbar.status_clicked.connect(self._open_status)
         outer.addWidget(self.topbar)
+        self.stage_reports: dict[str, object] = {}
+        self._status_dialog = None
 
         split = QHBoxLayout()
         split.setContentsMargins(0, 0, 0, 0)
@@ -194,6 +201,7 @@ class MainWindow(QMainWindow):
         # 결과부터 보여준다.
         self.runner = PipelineRunner(self.db.path, self)
         self.runner.progress.connect(self._on_progress)
+        self.runner.stage_done.connect(self._on_stage_done)
         self.runner.finished.connect(self._on_pipeline_finished)
         self.runner.failed.connect(self._on_pipeline_failed)
 
@@ -301,6 +309,22 @@ class MainWindow(QMainWindow):
         view = self.stack.currentWidget()
         if hasattr(view, "refresh"):
             view.refresh()
+
+    def _open_status(self) -> None:
+        from .status_dialog import StatusDialog
+
+        dialog = StatusDialog(self, self)
+        self._status_dialog = dialog
+        # 열려 있는 동안 진행 상황이 계속 갱신되도록 tick에 물린다.
+        self._tick.timeout.connect(dialog.refresh)
+        try:
+            dialog.exec()
+        finally:
+            self._tick.timeout.disconnect(dialog.refresh)
+            self._status_dialog = None
+
+    def _on_stage_done(self, report) -> None:
+        self.stage_reports[report.stage] = report
 
     def _open_task_from_calendar(self, task_id: int) -> None:
         self.go("tasks")

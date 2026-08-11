@@ -25,10 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("업무기억관")
     app.setOrganizationName("WorkMemory")
-    app.setStyleSheet(theme.stylesheet())
 
     db = open_project(args.project, Path(args.data) if args.data else None)
     db.audit("app.start", detail=f"project={args.project}")
+    app.setStyleSheet(theme.stylesheet(large_text=db.get_meta("large_text") == "1"))
 
     window = MainWindow(db)
     window.show()

@@ -651,6 +651,112 @@ def test_task_detail_how_step_opens_original_on_click(make_window, db, tmp_path)
     assert opened == [str(real_file)]
 
 
+def test_status_dialog_shows_stage_progress(make_window, db):
+    """상단 바를 누르면 단계별 진행을 볼 수 있어야 한다 (doc/00 §6.5)."""
+    from app.jobs.pipeline import StageReport
+    from app.ui.status_dialog import StatusDialog
+
+    window = make_window(db)
+    window.stage_reports["파일 찾기"] = StageReport("파일 찾기", done=10, total=10, note="문서 5건")
+    window.stage_reports["내용 읽기"] = StageReport("내용 읽기", done=3, total=5)
+
+    dialog = StatusDialog(window)
+    texts = _labels(dialog)
+    assert any("파일 찾기" in t and "10" in t for t in texts)
+    assert any("내용 읽기" in t and "3" in t for t in texts)
+    dialog.close()
+
+
+def test_status_dialog_lists_failures_from_every_stage(make_window, db):
+    from app.jobs.pipeline import StageReport
+    from app.ui.status_dialog import StatusDialog
+
+    window = make_window(db)
+    report = StageReport("내용 읽기", done=2, total=2)
+    report.errors = ["암호_문서.hwp: 암호로 보호된 문서"]
+    window.stage_reports["내용 읽기"] = report
+
+    dialog = StatusDialog(window)
+    texts = _labels(dialog)
+    assert any("암호로 보호된 문서" in t for t in texts)
+    dialog.close()
+
+
+def test_status_dialog_toggle_reflects_runner_state(make_window, db):
+    from app.ui.status_dialog import StatusDialog
+
+    window = make_window(db)
+    dialog = StatusDialog(window)
+    assert dialog.toggle.text() == "이어서 실행"
+    dialog.close()
+
+
+def test_status_bar_click_opens_status_dialog(make_window, db, monkeypatch):
+    class _DummyDialog:
+        def exec(self):
+            return None
+
+        def refresh(self) -> None:
+            pass
+
+    window = make_window(db)
+    opened = []
+    monkeypatch.setattr(
+        "app.ui.status_dialog.StatusDialog",
+        lambda *a, **k: opened.append(True) or _DummyDialog(),
+    )
+    window.topbar.status_clicked.emit()
+    assert opened == [True]
+
+
+def test_settings_shows_audit_log_entries(make_window, db):
+    from app.ui.views.settings import SettingsDialog
+
+    db.audit("document.open", r"D:\자료\문서.hwp", result="ok")
+    dialog = SettingsDialog(db, make_window(db))
+    texts = _labels(dialog)
+    assert any("document.open" in t for t in texts)
+    dialog.close()
+
+
+def test_settings_writes_audit_log_csv(make_window, db, tmp_path):
+    """다이얼로그는 거치지 않는다 — 네이티브 파일 다이얼로그를 몽키패치로
+    가로채려다 실제 모달 창이 뜨며 시험이 멈춘 사고가 있었다. 쓰기 로직만
+    직접 부른다."""
+    from app.ui.views.settings import SettingsDialog
+
+    db.audit("document.open", r"D:\자료\문서.hwp", result="ok")
+    out_path = tmp_path / "audit.csv"
+
+    dialog = SettingsDialog(db, make_window(db))
+    count = dialog._write_audit_csv(str(out_path))
+
+    assert count >= 1
+    assert out_path.exists()
+    content = out_path.read_text(encoding="utf-8-sig")
+    assert "document.open" in content
+    dialog.close()
+
+
+def test_settings_large_text_toggle_persists_and_rescales(make_window, db, qapp):
+    from app.ui.views.settings import SettingsDialog
+
+    from PySide6.QtWidgets import QCheckBox
+
+    dialog = SettingsDialog(db, make_window(db))
+    checkbox = dialog.findChild(QCheckBox)
+    assert checkbox is not None
+    assert not checkbox.isChecked()
+
+    checkbox.setChecked(True)
+    assert db.get_meta("large_text") == "1"
+    assert "font-size: 17px" in qapp.styleSheet()
+
+    checkbox.setChecked(False)
+    assert db.get_meta("large_text") == "0"
+    dialog.close()
+
+
 def test_documents_view_hides_non_document_files_by_default(make_window, db):
     source_id = db.add_source(r"D:\혼합")
     db.upsert_document(source_id, {

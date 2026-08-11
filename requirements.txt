@@ -14,3 +14,4 @@ httpx>=0.28
 # 개발·시험용 (배포 패키지에는 불필요)
 pytest>=9.1
 pytest-cov>=7.1
+pyinstaller>=6.22

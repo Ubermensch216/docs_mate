@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QPushButton,
@@ -51,9 +53,28 @@ class SettingsDialog(QDialog):
 
     def refresh(self) -> None:
         clear_layout(self.body)
+        self._accessibility()
         self._sources()
         self._ai()
         self._storage()
+        self._audit_log()
+
+    def _accessibility(self) -> None:
+        card = Card()
+        card.body.addWidget(section_title("화면"))
+        checkbox = QCheckBox("글자 크게 보기")
+        checkbox.setChecked(self.db.get_meta("large_text") == "1")
+        checkbox.toggled.connect(self._toggle_large_text)
+        card.body.addWidget(checkbox)
+        self.body.addWidget(card)
+
+    def _toggle_large_text(self, checked: bool) -> None:
+        from .. import theme
+
+        self.db.set_meta("large_text", "1" if checked else "0")
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.stylesheet(large_text=checked))
 
     def _sources(self) -> None:
         card = Card()
@@ -101,6 +122,62 @@ class SettingsDialog(QDialog):
             )
         )
         self.body.addWidget(card)
+
+    def _audit_log(self) -> None:
+        """감사 로그는 앱에서 임의로 편집할 수 없고, 최근 내역을 확인하고
+        승인된 형식(CSV)으로 내보낼 수 있어야 한다 (PRD §20.2)."""
+        card = Card()
+        head = QHBoxLayout()
+        head.addWidget(section_title("최근 활동"))
+        head.addStretch(1)
+        export = QPushButton("내보내기")
+        export.clicked.connect(self._export_audit_log)
+        head.addWidget(export)
+        card.body.addLayout(head)
+
+        rows = self.db.recent_audit(20)
+        if not rows:
+            card.body.addWidget(muted_label("기록이 없습니다."))
+        for row in rows:
+            text = f"{row['at']}   {row['action']}"
+            if row["target"]:
+                text += f"   {row['target']}"
+            if row["result"]:
+                text += f"   [{row['result']}]"
+            card.body.addWidget(muted_label(text, small=True))
+        self.body.addWidget(card)
+
+    def _export_audit_log(self) -> None:
+        """경로는 다이얼로그로 묻고, 실제 쓰기는 _write_audit_csv에 맡긴다.
+
+        둘을 나눈 이유: 네이티브 파일 다이얼로그는 자동화 시험에서 몽키패치가
+        기대대로 가로채지지 않을 수 있어(Qt 정적 메서드), 시험이 실제
+        모달 창을 띄우며 멈추는 사고가 났었다. 쓰기 로직만 따로 두면 다이얼로그
+        없이 바로 검증할 수 있다.
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "감사 로그 내보내기", "audit_log.csv", "CSV (*.csv)"
+        )
+        if not path:
+            return
+        count = self._write_audit_csv(path)
+        QMessageBox.information(self, "내보내기 완료", f"{count:,}건을 저장했습니다.\n{path}")
+
+    def _write_audit_csv(self, path: str) -> int:
+        import csv
+
+        rows = self.db.con.execute(
+            "SELECT at, action, target, detail, result FROM audit_logs ORDER BY id"
+        ).fetchall()
+        with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["시각", "동작", "대상", "상세", "결과"])
+            for row in rows:
+                writer.writerow([row["at"], row["action"], row["target"], row["detail"], row["result"]])
+        self.db.audit("audit_log.export", path)
+        return len(rows)
 
     def _storage(self) -> None:
         card = Card()
