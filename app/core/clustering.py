@@ -41,6 +41,7 @@ class Cluster:
     doc_ids: list[int]
     cohesion: float = 0.0        # 묶음 내부 평균 유사도
     separation: float = 0.0      # 다른 묶음과의 평균 유사도
+    has_peers: bool = False      # 분리도를 잴 상대가 있었는가
 
     @property
     def size(self) -> int:
@@ -48,7 +49,19 @@ class Cluster:
 
     @property
     def confidence(self) -> str:
-        """묶음이 얼마나 단단한지. 숫자 확률을 노출하지 않기 위한 3단계."""
+        """묶음이 얼마나 단단한지. 숫자 확률을 노출하지 않기 위한 3단계.
+
+        묶음이 하나뿐이면 분리도를 잴 상대가 없다. 그때 separation=0을 그대로
+        쓰면 margin이 부풀어 무엇이든 '단단함'으로 나온다. 비교 대상이 없을
+        때는 응집도만으로 판단하되 기준을 높인다.
+        """
+        if not self.has_peers:
+            if self.cohesion >= 0.90:
+                return "high"
+            if self.cohesion >= 0.80:
+                return "medium"
+            return "low"
+
         margin = self.cohesion - self.separation
         if self.cohesion >= 0.85 and margin >= 0.15:
             return "high"
@@ -125,6 +138,7 @@ def cluster(
                 doc_ids=[int(store.ids[i]) for i in members],
                 cohesion=_mean_within(matrix, members),
                 separation=_mean_between(matrix, members, others),
+                has_peers=others is not None,
             )
         )
 

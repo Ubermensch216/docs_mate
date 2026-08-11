@@ -39,6 +39,14 @@ FINAL_MARKERS: tuple[tuple[str, float, str], ...] = (
 
 RECENCY_SPAN_YEARS = 4
 
+# 이유를 두 문장만 보여준다. 어느 것을 남길지는 중요도로 정한다.
+PRIORITY_PINNED = 100
+PRIORITY_FINAL = 70      # '송부'·'결재' 같은 결정적 단서
+PRIORITY_TYPE = 60
+PRIORITY_RECENCY = 50
+PRIORITY_DUPLICATE = 40
+MAX_REASONS = 2
+
 
 @dataclass(slots=True)
 class Recommendation:
@@ -77,30 +85,36 @@ def recommend(
     scored: list[Recommendation] = []
     for item in facts:
         parts: dict[str, float] = {}
-        reasons: list[str] = []
+        # (중요도, 문장). 생성 순서가 아니라 중요도로 골라야 가장 쓸모 있는
+        # 근거가 살아남는다 — '송부' 표기 같은 결정적 단서를 순서 때문에
+        # 버리면 추천을 신뢰할 근거가 사라진다.
+        reasons: list[tuple[int, str]] = []
 
         if item.user_pinned:
             parts["사용자 지정"] = 10.0
-            reasons.append("사용자가 대표 문서로 지정했습니다")
+            reasons.append((PRIORITY_PINNED, "사용자가 대표 문서로 지정했습니다"))
 
         recency, recency_reason = _recency(item, this_year)
         parts["최근성"] = recency
         if recency_reason:
-            reasons.append(recency_reason)
+            reasons.append((PRIORITY_RECENCY, recency_reason))
 
         weight, type_reason = _type_weight(item.filename)
         parts["문서 유형"] = weight
         if type_reason:
-            reasons.append(type_reason)
+            reasons.append((PRIORITY_TYPE, type_reason))
 
         final, final_reason = _final_marker(item.filename)
         parts["최종본 표기"] = final
         if final_reason:
-            reasons.append(final_reason)
+            reasons.append((PRIORITY_FINAL, final_reason))
 
         if item.duplicate_count > 1:
             parts["복사 횟수"] = min(1.5, 0.5 * (item.duplicate_count - 1))
-            reasons.append(f"같은 문서가 {item.duplicate_count}곳에 복사되어 있습니다")
+            reasons.append(
+                (PRIORITY_DUPLICATE,
+                 f"같은 문서가 {item.duplicate_count}곳에 복사되어 있습니다")
+            )
 
         if item.is_version_representative:
             parts["버전 대표"] = 0.8
@@ -163,9 +177,8 @@ def _volume(char_count: int) -> float:
     return 0.5
 
 
-def _join(reasons: list[str]) -> str:
+def _join(reasons: list[tuple[int, str]]) -> str:
     if not reasons:
         return "이 업무에서 비교적 최근 자료입니다"
-    if len(reasons) == 1:
-        return reasons[0]
-    return reasons[0] + ". " + reasons[1]
+    best = sorted(reasons, key=lambda item: -item[0])[:MAX_REASONS]
+    return ". ".join(text for _priority, text in best)

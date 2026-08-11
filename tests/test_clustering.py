@@ -93,10 +93,25 @@ def test_cohesion_and_separation_feed_confidence():
 
 def test_loose_grouping_is_not_reported_as_high_confidence():
     """느슨하게 묶인 것을 단단하다고 말하면 안 된다."""
+    rows = [[1.0, 0.0], [0.60, 0.80], [0.80, 0.60]]
+    store = VectorStore(np.array([1, 2, 3]), normalize(np.asarray(rows, np.float32)))
+    result = cluster(store, threshold=0.55, min_size=3)
+    assert result.clusters[0].confidence in ("medium", "low")
+
+
+def test_single_cluster_cannot_claim_high_confidence_on_a_free_margin():
+    """묶음이 하나뿐이면 분리도를 잴 상대가 없다.
+
+    separation=0을 그대로 쓰면 margin이 부풀어 무엇이든 '단단함'이 된다.
+    비교 대상이 없다는 사실 자체를 신뢰도에 반영해야 한다.
+    """
     rows = [[1.0, 0.0], [0.80, 0.60], [0.86, 0.51]]
     store = VectorStore(np.array([1, 2, 3]), normalize(np.asarray(rows, np.float32)))
-    result = cluster(store, threshold=0.70, min_size=3)
-    assert result.clusters[0].confidence in ("medium", "low")
+    group = cluster(store, threshold=0.70, min_size=3).clusters[0]
+
+    assert group.has_peers is False
+    assert group.cohesion > 0.85          # 응집도만 보면 높지만
+    assert group.confidence == "medium"   # 비교 대상이 없어 단정하지 않는다
 
 
 def test_higher_threshold_splits_more():
