@@ -79,21 +79,21 @@ def discover(
         names = _filenames(db, group.doc_ids)
         tokens = common_tokens(names)
 
-        label, source, error = _name(client if naming_ready else None, names, tokens)
-        if error:
-            result.errors.append(error)
-        if source == "model":
+        named = _name(client if naming_ready else None, names, tokens)
+        if named.error:
+            result.errors.append(named.error)
+        if named.source == "model":
             result.named_by_model += 1
         else:
             result.named_by_filename += 1
 
-        task_id = _upsert_task(db, label, group, source)
+        task_id = _upsert_task(db, named, group)
         assigned = _attach(db, task_id, group.doc_ids)
         result.assigned += assigned
         _store_reading(db, task_id, group.doc_ids)
 
         if on_progress:
-            on_progress(index, len(grouping.clusters), label)
+            on_progress(index, len(grouping.clusters), named.label)
 
     result.tasks = db.con.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
     db.audit("task.discover", detail=result.summary(), result="ok")
@@ -102,21 +102,27 @@ def discover(
 
 # ── 이름 짓기 ───────────────────────────────────────────────────────
 
-def _name(
-    client: OllamaClient | None, names: list[str], tokens: list[str]
-) -> tuple[str, str, str | None]:
-    """(이름, 출처, 오류). 모델이 없거나 실패하면 파일명으로 대신한다."""
+@dataclass(slots=True)
+class Named:
+    label: str
+    description: str | None = None
+    source: str = "filename"     # model | filename
+    error: str | None = None
+
+
+def _name(client: OllamaClient | None, names: list[str], tokens: list[str]) -> Named:
+    """모델이 없거나 실패하면 파일명 공통 낱말로 대신한다."""
     fallback = _from_tokens(tokens)
     if client is None:
-        return fallback, "filename", None
+        return Named(fallback)
 
     naming = name_task(client, names[:MAX_TITLES_FOR_NAMING])
     if naming.error:
-        return fallback, "filename", naming.error
+        return Named(fallback, error=naming.error)
     if not naming.coherent:
         # 모델이 하나의 업무로 보지 않았다. 억지로 이름을 붙이지 않는다.
-        return fallback, "filename", None
-    return naming.name or fallback, "model", None
+        return Named(fallback, description=naming.description)
+    return Named(naming.name or fallback, naming.description, source="model")
 
 
 def _from_tokens(tokens: list[str]) -> str:
@@ -159,22 +165,27 @@ def _clear_proposals(db: Database) -> None:
     )
 
 
-def _upsert_task(db: Database, label: str, group: Cluster, source: str) -> int:
+def _upsert_task(db: Database, named: Named, group: Cluster) -> int:
     """같은 이름이 나오면 하나로 합친다.
 
     한 업무가 두 묶음으로 갈라졌을 때 이름이 같으면 합치는 것이 옳다 —
     업무 분류가 흩어지는 것을 막는 장치다.
     """
-    db.con.execute(
-        "INSERT INTO tasks(name, origin, status, confidence) "
-        "VALUES (?, 'ai', 'proposed', ?) ON CONFLICT(name) DO NOTHING",
-        (label, group.confidence),
+    description = named.description or (
+        f"파일명과 내용이 비슷한 문서 {group.size}건을 묶었습니다. "
+        "이름을 짓지 못해 공통 낱말로 대신했습니다."
     )
-    row = db.con.execute("SELECT id FROM tasks WHERE name = ?", (label,)).fetchone()
-    task_id = row["id"]
     db.con.execute(
-        "UPDATE tasks SET description = COALESCE(description, ?) WHERE id = ?",
-        (f"파일명 공통 낱말과 내용 유사도로 묶은 {group.size}건입니다.", task_id),
+        "INSERT INTO tasks(name, description, origin, status, confidence) "
+        "VALUES (?, ?, 'ai', 'proposed', ?) ON CONFLICT(name) DO NOTHING",
+        (named.label, description, group.confidence),
+    )
+    row = db.con.execute("SELECT id FROM tasks WHERE name = ?", (named.label,)).fetchone()
+    task_id = row["id"]
+    # 사람이 고친 업무의 설명은 덮어쓰지 않는다.
+    db.con.execute(
+        "UPDATE tasks SET description = ? WHERE id = ? AND status = 'proposed'",
+        (description, task_id),
     )
     return task_id
 
@@ -219,6 +230,8 @@ def _facts(db: Database, doc_ids: list[int]) -> list[scoring.DocFacts]:
     if not doc_ids:
         return []
     marks = ", ".join("?" * len(doc_ids))
+    # 완전 중복본은 대표 하나만 남긴다. 같은 문서를 두 번 추천하면
+    # 추천 목록 다섯 칸 중 두 칸이 같은 것으로 채워진다.
     rows = db.con.execute(
         f"""
         SELECT d.id, d.filename, d.eff_year, d.eff_month, d.eff_date_kind,
@@ -229,6 +242,9 @@ def _facts(db: Database, doc_ids: list[int]) -> list[scoring.DocFacts]:
                EXISTS(SELECT 1 FROM version_groups g WHERE g.latest_doc_id = d.id) AS is_rep
         FROM documents d
         WHERE d.id IN ({marks}) AND d.missing_since IS NULL
+          AND (d.hash IS NULL OR d.id = (
+                SELECT MIN(y.id) FROM documents y
+                WHERE y.hash = d.hash AND y.missing_since IS NULL))
         """,
         doc_ids,
     ).fetchall()

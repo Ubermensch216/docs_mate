@@ -128,7 +128,7 @@ class TasksView(QWidget):
         head.setSpacing(theme.SP_SM)
         head.addWidget(section_title(row["name"]))
         head.addStretch(1)
-        head.addWidget(muted_label(_span(row), small=True))
+        head.addWidget(muted_label(_span(row), small=True, wrap=False))
         card.body.addLayout(head)
 
         if row["description"]:
@@ -141,7 +141,9 @@ class TasksView(QWidget):
 
         reading = len(self.db.task_reading(row["id"]))
         if reading:
-            foot.addWidget(muted_label(f"📄 먼저 읽을 문서 {reading}건", small=True))
+            foot.addWidget(
+                muted_label(f"📄 먼저 읽을 문서 {reading}건", small=True, wrap=False)
+            )
         if row["status"] == "proposed":
             foot.addWidget(Badge("확인 필요", "attention"))
         foot.addStretch(1)

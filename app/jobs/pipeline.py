@@ -94,8 +94,12 @@ class Pipeline(QObject):
                 self._discover(db)
             db.audit("pipeline.stop", result="cancelled" if self._stop else "completed")
         except Exception as exc:  # 워커가 조용히 죽으면 사용자는 영문을 모른다
+            import traceback
+
             db.audit("pipeline.error", detail=type(exc).__name__, result="failed")
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            self.failed.emit(
+                f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=6)}"
+            )
         finally:
             db.close()
             self.finished.emit()

@@ -65,10 +65,13 @@ def body_label(text: str, wrap: bool = True) -> QLabel:
     return label
 
 
-def muted_label(text: str, small: bool = False) -> QLabel:
+def muted_label(text: str, small: bool = False, wrap: bool = True) -> QLabel:
+    """wrap=False는 줄바꿈되면 어색한 짧은 표시(뱃지 옆 문구 등)에 쓴다."""
     label = QLabel(text)
     label.setObjectName("Small" if small else "Muted")
-    label.setWordWrap(True)
+    label.setWordWrap(wrap)
+    if not wrap:
+        label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
     return label
 
 
