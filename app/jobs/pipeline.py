@@ -412,6 +412,9 @@ class Pipeline(QObject):
 
         report.done = report.total
         report.note = f"반복 업무 {found}개 발견" if tasks else "업무가 없습니다"
+        # cycles_found==0(반복을 하나도 못 찾음)과 '아직 안 살펴봄'을 구분해야
+        # 매 실행마다 파이프라인이 불필요하게 다시 도는 것을 막을 수 있다.
+        db.set_meta("cycles_checked", "1")
         self.stage_done.emit(report)
 
 
