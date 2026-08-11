@@ -185,6 +185,11 @@ class MainWindow(QMainWindow):
             if hasattr(view, "go_documents"):
                 view.go_documents.connect(lambda: self.go("documents"))
 
+        # When(일정)과 What(업무)은 서로 되돌아간다 — 일정에서 업무를 열고,
+        # 업무 상세에서 일정으로 넘어간다.
+        self.views["tasks"].go_calendar.connect(lambda: self.go("calendar"))
+        self.views["calendar"].open_task.connect(self._open_task_from_calendar)
+
         # 처리는 백그라운드에서 돈다. UI는 완료를 기다리지 않고 이미 처리된
         # 결과부터 보여준다.
         self.runner = PipelineRunner(self.db.path, self)
@@ -260,7 +265,7 @@ class MainWindow(QMainWindow):
         # 문서 처리는 끝났는데 업무를 아직 못 찾았거나, 업무는 찾았는데
         # 주기를 아직 못 살핀 경우도 이어서 해야 한다.
         needs_discovery = counts["embedded"] > 0 and counts["in_task"] == 0
-        needs_cycles = counts["tasks"] > 0 and counts["cycles_found"] == 0
+        needs_cycles = counts["tasks"] > 0 and self.db.get_meta("cycles_checked") is None
         if pending or needs_discovery or needs_cycles:
             self._start_pipeline()
 
@@ -294,6 +299,10 @@ class MainWindow(QMainWindow):
         view = self.stack.currentWidget()
         if hasattr(view, "refresh"):
             view.refresh()
+
+    def _open_task_from_calendar(self, task_id: int) -> None:
+        self.go("tasks")
+        self.views["tasks"].open_task(task_id)
 
     def _open_settings(self) -> None:
         from .views.settings import SettingsDialog

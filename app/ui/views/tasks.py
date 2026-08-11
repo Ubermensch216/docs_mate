@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -26,17 +27,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core import timeline
 from ...db import Database
 from .. import theme
 from ..widgets import (
     Badge,
     Card,
     EmptyState,
+    TimelineGrid,
+    UnknownBlock,
     clear_layout,
     muted_label,
     section_title,
     view_title,
 )
+from .cycle_format import cycle_headline, cycle_note, next_occurrence_text
 
 STAGES = [
     ("파일 찾기", "total", None),
@@ -54,6 +59,7 @@ CONFIDENCE_NOTE = {
 
 class TasksView(QWidget):
     go_documents = Signal()
+    go_calendar = Signal()
 
     def __init__(self, db: Database, parent: QWidget | None = None):
         super().__init__(parent)
@@ -133,6 +139,12 @@ class TasksView(QWidget):
 
         if row["description"]:
             card.body.addWidget(muted_label(row["description"]))
+
+        cycle = self.db.task_cycle(row["id"])
+        if cycle:
+            card.body.addWidget(
+                muted_label(f"🔁 {cycle_headline(cycle)} 반복", small=True)
+            )
 
         foot = QHBoxLayout()
         foot.setSpacing(theme.SP_MD)
@@ -240,6 +252,7 @@ class TasksView(QWidget):
         self.column.addWidget(Badge(note, kind))
 
         self._render_reading(task_id)
+        self._render_when(task_id)
         self._render_by_year(task_id)
 
     def _render_reading(self, task_id: int) -> None:
@@ -270,6 +283,67 @@ class TasksView(QWidget):
             # 이유 없는 추천은 만들지 않는다.
             card.body.addWidget(muted_label(pick["reason"], small=True))
             self.column.addWidget(card)
+
+    def _render_when(self, task_id: int) -> None:
+        """When — 격자를 세로로 읽어 반복 주기를 보여준다.
+
+        같은 격자를 Step 8에서 가로로 읽어 처리 순서(How)를 만든다.
+        """
+        rows = self.db.task_grid_documents(task_id)
+        docs = [
+            timeline.DatedDoc(
+                doc_id=r["id"], year=r["year"], month=r["month"],
+                day=int(r["eff_date"][8:10]) if r["eff_precision"] == "day" else None,
+                trustworthy=r["eff_date_kind"] != "fs",
+            )
+            for r in rows
+        ]
+        grid = timeline.build_grid(docs)
+
+        self.column.addWidget(_divider())
+        self.column.addWidget(section_title("When"))
+
+        if not grid.years:
+            self.column.addWidget(
+                UnknownBlock("이 업무 문서의 시점을 확인할 수 없어 반복 여부를 판단하지 못했습니다.")
+            )
+            return
+        if len(grid.years) < 2:
+            self.column.addWidget(
+                UnknownBlock(
+                    f"반복 여부를 판단할 자료가 부족합니다. 현재 확인된 연도가 "
+                    f"{len(grid.years)}개뿐입니다. 최소 2개 연도가 있어야 반복을 제시합니다."
+                )
+            )
+
+        cycle = self.db.task_cycle(task_id)
+        if cycle:
+            headline = QHBoxLayout()
+            headline.setSpacing(theme.SP_SM)
+            headline.addWidget(muted_label(f"🔁 {cycle_headline(cycle)} 반복"))
+            headline.addWidget(muted_label(f"· {cycle_note(cycle)}", small=True))
+            headline.addStretch(1)
+            self.column.addLayout(headline)
+
+        years = grid.years[-6:]   # 화면 폭을 넘지 않도록 최근 6개 연도만
+        cells = {(y, m): bool(grid.doc_ids(y, m)) for y in years for m in range(1, 13)}
+        today = date.today()
+        current = (today.year, today.month) if today.year in years else None
+        confidence = cycle["confidence"] if cycle else "low"
+        self.column.addWidget(TimelineGrid(years, cells, confidence, current))
+
+        if cycle:
+            next_text = next_occurrence_text(cycle, today)
+            if next_text:
+                foot = QHBoxLayout()
+                foot.setSpacing(theme.SP_SM)
+                foot.addWidget(muted_label(f"다음 예상 시점: {next_text}", small=True))
+                foot.addStretch(1)
+                go = QPushButton("연간 일정에서 보기 →")
+                go.setObjectName("Link")
+                go.clicked.connect(self.go_calendar.emit)
+                foot.addWidget(go)
+                self.column.addLayout(foot)
 
     def _render_by_year(self, task_id: int) -> None:
         rows = self.db.task_documents(task_id)

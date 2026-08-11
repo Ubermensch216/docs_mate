@@ -397,10 +397,14 @@ class Pipeline(QObject):
             cycles = []
             if guess:
                 found += 1
+                # 일(day) 힌트는 '매월 5~10일'처럼 매월 반복에만 붙인다. 연간
+                # 반복에 붙이면 "매년 9~11월 12일"처럼 어느 달의 12일인지
+                # 모호해져 오히려 혼란을 준다.
+                hint = timeline.day_hint(docs, None) if guess.kind == timeline.MONTHLY else None
                 cycles.append({
                     "kind": guess.kind,
                     "months": ",".join(str(m) for m in guess.months),
-                    "day_hint": timeline.day_hint(docs, guess.months or None),
+                    "day_hint": hint,
                     "years_observed": guess.years_observed,
                     "confidence": guess.confidence,
                     "evidence": ",".join(str(i) for i in guess.evidence_doc_ids),

@@ -115,13 +115,22 @@ def test_refresh_does_not_leak_widgets(make_window, db):
 
 
 def test_calendar_refuses_to_claim_cycles_without_enough_years(make_window, db):
-    """자료가 한 해치뿐이면 반복을 주장하지 않는다."""
+    """업무는 있지만 자료가 한 해치뿐이면 반복을 주장하지 않는다."""
     source_id = db.add_source(r"D:\한해자료")
-    db.upsert_document(source_id, {
+    db.con.execute(
+        "INSERT INTO tasks(name, origin, status, confidence) "
+        "VALUES ('단발업무', 'ai', 'proposed', 'medium')"
+    )
+    task_id = db.con.execute("SELECT id FROM tasks").fetchone()["id"]
+    doc_id = db.upsert_document(source_id, {
         "path": r"D:\한해자료\a.hwp", "filename": "a.hwp", "ext": ".hwp",
-        "eff_date": "2024-09-01", "eff_year": 2024, "parse_status": "ok",
-        "hash": "x",
+        "eff_date": "2024-09-01", "eff_year": 2024, "eff_month": 9,
+        "eff_date_kind": "body", "parse_status": "ok", "hash": "x",
     })
+    db.con.execute(
+        "INSERT INTO task_docs(task_id, doc_id, origin) VALUES (?, ?, 'ai')",
+        (task_id, doc_id),
+    )
     window = make_window(db)
     window.go("calendar")
     texts = [
@@ -196,7 +205,7 @@ def _seed_task(db: Database) -> int:
         doc_id = db.upsert_document(source_id, {
             "path": rf"D:\자료\{name}", "filename": name, "ext": ".docx",
             "parse_status": "ok", "hash": f"h{index}", "char_count": 900,
-            "eff_year": 2023 + index, "eff_date": f"202{index + 3}-10-01",
+            "eff_year": 2023 + index, "eff_month": 10, "eff_date": f"202{index + 3}-10-01",
             "eff_date_kind": "body", "eff_precision": "month",
         })
         db.con.execute(
@@ -293,6 +302,107 @@ def _buttons(widget) -> list[str]:
     from PySide6.QtWidgets import QPushButton
 
     return [b.text() for b in widget.findChildren(QPushButton) if b.text()]
+
+
+def _seed_cycle(db: Database, task_id: int, **overrides) -> None:
+    row = dict(kind="yearly", months="9,10,11", day_hint=None,
+               years_observed=4, confidence="high", evidence="")
+    row.update(overrides)
+    db.con.execute(
+        "INSERT INTO task_cycles(task_id, kind, months, day_hint, "
+        "years_observed, confidence, evidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (task_id, row["kind"], row["months"], row["day_hint"],
+         row["years_observed"], row["confidence"], row["evidence"]),
+    )
+
+
+def test_task_detail_shows_when_section_with_cycle(make_window, db):
+    """업무 상세는 한 화면에서 What 다음에 When을 보여준다."""
+    task_id = _seed_task(db)
+    _seed_cycle(db, task_id)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    texts = _labels(view)
+    assert any("When" in t for t in texts)
+    assert any("매년 9~11월" in t for t in texts), texts
+    assert any("신뢰도" in t for t in texts)
+
+
+def test_task_detail_without_cycle_explains_insufficient_data(make_window, db):
+    """반복을 찾지 못했으면 없다고 정직하게 말한다 — 지어내지 않는다."""
+    task_id = _seed_task(db)   # 문서 3건, 연도 2023~2025지만 주기는 안 심음
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    texts = _labels(view)
+    assert any("When" in t for t in texts)
+    # 확정된 주기가 없으므로 '🔁 매년 ...' 반복 헤드라인은 뜨지 않아야 한다.
+    assert not any(t.startswith("🔁") for t in texts), texts
+    assert not any("다음 예상 시점" in t for t in texts)
+
+
+def test_task_detail_shows_next_occurrence_link_to_calendar(make_window, db):
+    task_id = _seed_task(db)
+    _seed_cycle(db, task_id)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    signals_received = []
+    view.go_calendar.connect(lambda: signals_received.append(True))
+    for button in _button_widgets(view):
+        if "일정에서 보기" in button.text():
+            button.click()
+            break
+    assert signals_received, "일정으로 가는 링크를 찾지 못했습니다"
+
+
+def test_calendar_shows_recurring_tasks_when_present(make_window, db):
+    task_id = _seed_task(db)
+    _seed_cycle(db, task_id, months="8")   # 이번 달(테스트 실행 월과 무관하게 8월로 고정)
+    window = make_window(db)
+    window.go("calendar")
+    texts = _labels(window.views["calendar"])
+    assert any("연간 전체" in t for t in texts)
+    assert any("행정사무감사" in t for t in texts)
+
+
+def test_calendar_upcoming_list_excludes_monthly_cycles(make_window, db):
+    """매월 반복은 '항상 이번 달'이라 다가오는 일정에 넣지 않는다."""
+    task_id = _seed_task(db)
+    _seed_cycle(db, task_id, kind="monthly", months="", day_hint="5~10일")
+    window = make_window(db)
+    window.go("calendar")
+    texts = _labels(window.views["calendar"])
+    assert any("예정된 반복 일정이 없습니다" in t for t in texts), texts
+
+
+def test_calendar_open_task_signal_navigates_to_task_detail(make_window, db):
+    task_id = _seed_task(db)
+    _seed_cycle(db, task_id)
+    window = make_window(db)
+    window.go("calendar")
+
+    for button in _button_widgets(window.views["calendar"]):
+        if "행정사무감사" in button.text():
+            button.click()
+            break
+    assert window.stack.currentWidget() is window.views["tasks"]
+    assert window.views["tasks"]._task_id == task_id
+
+
+def test_calendar_without_any_cycles_shows_insufficient_data_message(make_window, db):
+    _add_docs(db, count=4, parsed=4)
+    window = make_window(db)
+    window.go("calendar")
+    texts = _labels(window.views["calendar"])
+    assert any("업무 보기" in t or "문서 보기" in t or "아직" in t for t in texts), texts
+
+
+def _button_widgets(widget):
+    from PySide6.QtWidgets import QPushButton
+
+    return [b for b in widget.findChildren(QPushButton) if b.text()]
 
 
 def test_documents_view_hides_non_document_files_by_default(make_window, db):

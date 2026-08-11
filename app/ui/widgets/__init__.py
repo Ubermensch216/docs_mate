@@ -17,16 +17,19 @@ from .common import (
     section_title,
     view_title,
 )
+from .timeline_grid import TimelineGrid, legend_text
 
 __all__ = [
     "Badge",
     "Card",
     "EmptyState",
     "EvidenceChip",
+    "TimelineGrid",
     "UnknownBlock",
     "body_label",
     "clear_layout",
     "divider",
+    "legend_text",
     "muted_label",
     "section_title",
     "view_title",
