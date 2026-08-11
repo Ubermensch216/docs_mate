@@ -280,6 +280,9 @@ class Database:
         counts["in_task"] = self.con.execute(
             "SELECT COUNT(DISTINCT doc_id) AS n FROM task_docs"
         ).fetchone()["n"]
+        counts["cycles_found"] = self.con.execute(
+            "SELECT COUNT(*) AS n FROM task_cycles"
+        ).fetchone()["n"]
         return counts
 
     # ── 업무 (What) ─────────────────────────────────────────────────
@@ -363,6 +366,61 @@ class Database:
             (task_id, doc_id, str(task_id)),
         )
         self.audit("task.detach", f"{task_id}/{doc_id}")
+
+    # ── 주기 (When) ─────────────────────────────────────────────────
+    def replace_task_cycles(self, task_id: int, cycles: list[dict]) -> None:
+        """이 업무의 AI 제안 주기를 통째로 갈아 끼운다.
+
+        사람이 확정한 주기(decided_by='user')는 지금 이 단계에 UI가 없어
+        발생하지 않지만, 미래를 위해 건드리지 않는다 (NFR-SAF-004).
+        """
+        self.con.execute(
+            "DELETE FROM task_cycles WHERE task_id = ? AND decided_by = 'ai'",
+            (task_id,),
+        )
+        for cycle in cycles:
+            self.con.execute(
+                "INSERT INTO task_cycles"
+                "(task_id, kind, months, day_hint, years_observed, confidence, evidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id, cycle["kind"], cycle["months"], cycle.get("day_hint"),
+                    cycle["years_observed"], cycle["confidence"], cycle.get("evidence"),
+                ),
+            )
+
+    def task_cycle(self, task_id: int) -> sqlite3.Row | None:
+        return self.con.execute(
+            "SELECT * FROM task_cycles WHERE task_id = ? ORDER BY years_observed DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+
+    def all_cycles(self) -> list[sqlite3.Row]:
+        return self.con.execute(
+            "SELECT c.*, t.name AS task_name, t.id AS task_id "
+            "FROM task_cycles c JOIN tasks t ON t.id = c.task_id "
+            "ORDER BY c.years_observed DESC"
+        ).fetchall()
+
+    def task_grid_documents(self, task_id: int) -> list[sqlite3.Row]:
+        """이 업무 문서의 연도·월·시점출처를 격자 계산용으로 돌려준다.
+
+        완전 중복본은 하나만 남긴다 — 같은 문서가 여러 번 복사됐다고
+        그 달의 반복 근거가 더 세지면 안 된다.
+        """
+        return self.con.execute(
+            """
+            SELECT d.id, d.eff_year AS year, d.eff_month AS month,
+                   d.eff_date, d.eff_precision, d.eff_date_kind
+            FROM task_docs td
+            JOIN documents d ON d.id = td.doc_id
+            WHERE td.task_id = ? AND d.missing_since IS NULL AND d.eff_year IS NOT NULL
+              AND (d.hash IS NULL OR d.id = (
+                    SELECT MIN(x.id) FROM documents x
+                    WHERE x.hash = d.hash AND x.missing_since IS NULL))
+            """,
+            (task_id,),
+        ).fetchall()
 
     def unclassified_count(self) -> int:
         return self.con.execute(

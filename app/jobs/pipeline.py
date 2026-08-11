@@ -19,7 +19,7 @@ from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
 from ..ai import OllamaClient
 from ..ai.discover import discover
-from ..core import dating
+from ..core import dating, timeline
 from ..db import Database
 from ..ingest import scanner
 from ..search import pack
@@ -36,6 +36,7 @@ STAGE_PARSE = "내용 읽기"
 STAGE_DATE = "시점 확인"
 STAGE_EMBED = "의미 색인"
 STAGE_DISCOVER = "업무 파악"
+STAGE_CYCLES = "일정 파악"
 
 # 임베딩에 쓸 글자 수. 파일명과 앞부분만으로도 문서의 정체는 거의 드러난다.
 EMBED_CHARS = 1200
@@ -92,6 +93,8 @@ class Pipeline(QObject):
                 self._embed(db)
             if not self._stop:
                 self._discover(db)
+            if not self._stop:
+                self._cycles(db)
             db.audit("pipeline.stop", result="cancelled" if self._stop else "completed")
         except Exception as exc:  # 워커가 조용히 죽으면 사용자는 영문을 모른다
             import traceback
@@ -362,6 +365,53 @@ class Pipeline(QObject):
         report.done = report.total
         report.note = result.summary()
         report.errors = result.errors[:20]
+        self.stage_done.emit(report)
+
+
+    # ── 7단계: 일정 파악 (When) ─────────────────────────────────────
+    def _cycles(self, db: Database) -> None:
+        """업무마다 연도×월 격자를 만들어 반복 주기를 찾는다.
+
+        AI를 쓰지 않는다 — 시점 데이터로 하는 순수 계산이라 Ollama가 꺼져
+        있어도 이 단계는 항상 돈다(제품 원칙 2).
+        """
+        tasks = db.tasks()
+        report = StageReport(STAGE_CYCLES, total=len(tasks))
+        found = 0
+
+        for index, task in enumerate(tasks, start=1):
+            rows = db.task_grid_documents(task["id"])
+            docs = [
+                timeline.DatedDoc(
+                    doc_id=row["id"],
+                    year=row["year"],
+                    month=row["month"],
+                    day=int(row["eff_date"][8:10]) if row["eff_precision"] == "day" else None,
+                    trustworthy=row["eff_date_kind"] != "fs",
+                )
+                for row in rows
+            ]
+            grid = timeline.build_grid(docs)
+            guess = timeline.detect_cycle(grid)
+
+            cycles = []
+            if guess:
+                found += 1
+                cycles.append({
+                    "kind": guess.kind,
+                    "months": ",".join(str(m) for m in guess.months),
+                    "day_hint": timeline.day_hint(docs, guess.months or None),
+                    "years_observed": guess.years_observed,
+                    "confidence": guess.confidence,
+                    "evidence": ",".join(str(i) for i in guess.evidence_doc_ids),
+                })
+            db.replace_task_cycles(task["id"], cycles)
+
+            if index % 5 == 0 or index == len(tasks):
+                self.progress.emit(STAGE_CYCLES, index, len(tasks), task["name"])
+
+        report.done = report.total
+        report.note = f"반복 업무 {found}개 발견" if tasks else "업무가 없습니다"
         self.stage_done.emit(report)
 
 
