@@ -256,7 +256,10 @@ class MainWindow(QMainWindow):
             "       OR d.eff_date IS NULL "
             "       OR (d.parse_status IN ('ok','partial') AND e.doc_id IS NULL))"
         ).fetchone()["n"]
-        if pending:
+        counts = self.db.counts()
+        # 문서 처리는 끝났는데 업무를 아직 못 찾은 경우도 이어서 해야 한다.
+        needs_discovery = counts["embedded"] > 0 and counts["in_task"] == 0
+        if pending or needs_discovery:
             self._start_pipeline()
 
     def _start_pipeline(self) -> None:
