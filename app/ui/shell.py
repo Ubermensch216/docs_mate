@@ -267,7 +267,8 @@ class MainWindow(QMainWindow):
         needs_discovery = counts["embedded"] > 0 and counts["in_task"] == 0
         needs_cycles = counts["tasks"] > 0 and self.db.get_meta("cycles_checked") is None
         needs_steps = counts["tasks"] > 0 and self.db.get_meta("steps_checked") is None
-        if pending or needs_discovery or needs_cycles or needs_steps:
+        needs_chunks = counts["documents"] > 0 and self.db.get_meta("chunks_checked") is None
+        if pending or needs_discovery or needs_cycles or needs_steps or needs_chunks:
             self._start_pipeline()
 
     def _start_pipeline(self) -> None:

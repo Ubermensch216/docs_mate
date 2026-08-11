@@ -20,6 +20,7 @@ from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 from ..ai import OllamaClient
 from ..ai.discover import discover
 from ..core import dating, timeline
+from ..core.chunking import build_chunks
 from ..core.labeling import label_document
 from ..db import Database
 from ..ingest import scanner
@@ -39,6 +40,8 @@ STAGE_EMBED = "의미 색인"
 STAGE_DISCOVER = "업무 파악"
 STAGE_CYCLES = "일정 파악"
 STAGE_STEPS = "처리 순서 파악"
+STAGE_CHUNKS = "질문 준비"
+CHUNK_EMBED_BATCH = 32
 
 # 임베딩에 쓸 글자 수. 파일명과 앞부분만으로도 문서의 정체는 거의 드러난다.
 EMBED_CHARS = 1200
@@ -99,6 +102,8 @@ class Pipeline(QObject):
                 self._cycles(db)
             if not self._stop:
                 self._steps(db)
+            if not self._stop:
+                self._chunks(db)
             db.audit("pipeline.stop", result="cancelled" if self._stop else "completed")
         except Exception as exc:  # 워커가 조용히 죽으면 사용자는 영문을 모른다
             import traceback
@@ -470,6 +475,67 @@ class Pipeline(QObject):
         report.done = report.total
         report.note = f"{steps_made:,}단계 재구성" if steps_made else "재구성할 자료가 없습니다"
         db.set_meta("steps_checked", "1")
+        self.stage_done.emit(report)
+
+
+    # ── 9단계: 질문 준비 (RAG 재료) ─────────────────────────────────
+    def _chunks(self, db: Database) -> None:
+        """문서를 조각으로 나누고 임베딩한다 — 질문 화면의 재료다.
+
+        파서가 이미 나눠 둔 문단·표·페이지·시트·슬라이드 경계를 그대로
+        쓴다(core/chunking.py). Ollama가 없으면 조용히 건너뛴다 — AI는
+        단일 장애점이 아니다.
+        """
+        client = OllamaClient()
+        health = client.health()
+        if not health.embedding_ready:
+            self.stage_done.emit(
+                StageReport(STAGE_CHUNKS, note=f"건너뜀 — {health.message}")
+            )
+            return
+
+        rows = db.con.execute(
+            "SELECT d.id, d.filename FROM documents d "
+            "WHERE d.missing_since IS NULL AND d.parse_status IN ('ok', 'partial') "
+            "  AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.id)"
+        ).fetchall()
+        report = StageReport(STAGE_CHUNKS, total=len(rows))
+        made = 0
+
+        for index, row in enumerate(rows, start=1):
+            if self._stop:
+                break
+            sections = db.con.execute(
+                "SELECT locator, text FROM document_sections WHERE doc_id = ? ORDER BY ordinal",
+                (row["id"],),
+            ).fetchall()
+            pieces = build_chunks([(s["locator"], s["text"]) for s in sections])
+            if not pieces:
+                report.done = index
+                continue
+
+            chunk_pairs = db.replace_document_chunks(row["id"], pieces)
+            made += len(chunk_pairs)
+
+            for start in range(0, len(chunk_pairs), CHUNK_EMBED_BATCH):
+                if self._stop:
+                    break
+                batch = chunk_pairs[start : start + CHUNK_EMBED_BATCH]
+                vectors, error = client.embed([text for _, text in batch])
+                if error:
+                    report.errors.append(f"{row['filename']}: {error}")
+                    break
+                for (chunk_id, _text), vector in zip(batch, vectors):
+                    db.save_chunk_embedding(chunk_id, client.embed_model, len(vector), pack(vector))
+
+            report.done = index
+            if index % 5 == 0 or index == len(rows):
+                self.progress.emit(STAGE_CHUNKS, index, len(rows), row["filename"])
+
+        report.note = f"{made:,}조각 준비" if made else "준비할 자료가 없습니다"
+        if report.errors:
+            report.note += " · 일부 실패"
+        db.set_meta("chunks_checked", "1")
         self.stage_done.emit(report)
 
 

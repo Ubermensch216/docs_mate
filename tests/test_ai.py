@@ -135,7 +135,7 @@ def test_unusable_task_names_are_rejected(raw):
 
 # ── 프롬프트 ────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("name", ["classify", "summarize", "keywords", "name_task"])
+@pytest.mark.parametrize("name", ["classify", "summarize", "keywords", "name_task", "ask"])
 def test_prompts_load_with_a_version(name):
     body, version = load(name)
     assert body and "<!--" not in body

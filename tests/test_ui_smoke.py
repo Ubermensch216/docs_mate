@@ -419,6 +419,138 @@ def _button_widgets(widget):
     return [b for b in widget.findChildren(QPushButton) if b.text()]
 
 
+def _seed_chunked_doc(db: Database, source_id: int, filename: str = "문서.hwp") -> int:
+    """질문 화면이 '준비됨'으로 보도록 청크·임베딩을 갖춘 문서를 심는다."""
+    from app.search.vector import pack
+
+    doc_id = db.upsert_document(source_id, {
+        "path": rf"D:\자료\{filename}", "filename": filename, "ext": ".hwp",
+        "parse_status": "ok", "hash": filename,
+    })
+    chunk_id, _ = db.replace_document_chunks(doc_id, [(1, "1문단", "본문")])[0]
+    db.save_chunk_embedding(chunk_id, "bge-m3", 3, pack([1.0, 0.0, 0.0]))
+    return doc_id
+
+
+def test_ask_view_blocks_input_without_chunks(make_window, db):
+    """의미 색인이 없으면 입력을 막는다 — 근거 없이 답하지 않기 위해서다."""
+    db.add_source(r"D:\자료")
+    db.upsert_document(1, {
+        "path": r"D:\자료\a.hwp", "filename": "a.hwp", "ext": ".hwp",
+        "parse_status": "ok", "hash": "a",
+    })
+    view = make_window(db).views["ask"]
+    view.refresh()
+    assert not view.send.isEnabled()
+    assert "색인" in view.notice.label.text() or "준비" in view.notice.label.text()
+
+
+def test_ask_view_enables_input_once_chunks_exist(make_window, db):
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+    view.refresh()
+    assert view.send.isEnabled()
+    assert not view.notice.isVisible()
+
+
+def test_ask_view_renders_withheld_answer_with_related_docs(make_window, db):
+    """근거 부족 시 이유와 함께 대신 찾은 문서를 보여준다 — 지어내지 않는다."""
+    from app.search.rag import Answer, RelatedDoc
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    answer = Answer(
+        question="질문", text="확인 가능한 자료가 부족합니다.", withheld=True,
+        related_docs=[RelatedDoc(1, "비슷한문서.hwp", r"D:\자료\비슷한문서.hwp")],
+    )
+    view._render_answer(answer)
+
+    texts = [w.text() for w in view.findChildren(type(view.input)) if hasattr(w, "text")]
+    labels = _labels(view)
+    buttons = _button_widgets(view)
+    assert any("부족합니다" in t for t in labels)
+    assert any("비슷한문서.hwp" in b.text() for b in buttons)
+
+
+def test_ask_view_renders_answer_with_citations_and_feedback(make_window, db):
+    """모든 AI 주장은 근거 문서를 갖는다 — 근거 없는 답은 화면에 올리지 않는다."""
+    from app.search.rag import Answer, Citation
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    answer = Answer(
+        question="질문", text="2024년 수질 관련 자료 6건이 확인됩니다.[1]", withheld=False,
+        citations=[Citation(1, 1, "행감자료.hwp", "3쪽 2문단", r"D:\자료\행감자료.hwp")],
+        model="gemma4:e2b",
+    )
+    view._render_answer(answer)
+
+    texts = _labels(view)
+    buttons = _button_widgets(view)
+    assert any("6건이 확인됩니다" in t for t in texts)
+    assert any("행감자료.hwp" in b.text() for b in buttons)
+    assert any("도움됨" in b.text() for b in buttons)
+    assert any("부정확" in b.text() for b in buttons)
+
+
+def test_ask_view_shows_error_when_generation_fails(make_window, db):
+    from app.search.rag import Answer
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    answer = Answer(question="질문", text="", withheld=True, error="로컬 AI에 연결할 수 없습니다")
+    view._render_answer(answer)
+
+    texts = _labels(view)
+    assert any("연결할 수 없습니다" in t for t in texts)
+
+
+def test_ask_view_rating_persists_to_the_latest_question(make_window, db):
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    qid = db.save_question("질문", "답변", "[]", False, "gemma4:e2b")
+
+    from app.search.rag import Answer, Citation
+
+    answer = Answer(
+        question="질문", text="답변입니다.", withheld=False,
+        citations=[Citation(1, 1, "문서.hwp", "1문단", r"D:\자료\문서.hwp")],
+    )
+    view._render_answer(answer)
+
+    for button in _button_widgets(view):
+        if "도움됨" in button.text():
+            button.click()
+            break
+
+    row = db.con.execute("SELECT rating FROM questions WHERE id = ?", (qid,)).fetchone()
+    assert row["rating"] == "helpful"
+
+
+def test_ask_view_asking_shows_a_waiting_state(make_window, db, monkeypatch):
+    """질문을 보내면 즉시 '찾아보는 중' 상태로 바뀌어야 한다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    monkeypatch.setattr(view._runner, "start", lambda q: True)
+    view.input.setText("질문 있음")
+    view._ask()
+
+    texts = _labels(view)
+    assert any("찾아보는 중" in t for t in texts)
+    assert not view.send.isEnabled()
+
+
 def _seed_steps(db: Database, task_id: int, year: int, steps: list[dict]) -> None:
     for step in steps:
         db.con.execute(

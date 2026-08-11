@@ -280,6 +280,12 @@ class Database:
         counts["in_task"] = self.con.execute(
             "SELECT COUNT(DISTINCT doc_id) AS n FROM task_docs"
         ).fetchone()["n"]
+        counts["chunks"] = self.con.execute(
+            "SELECT COUNT(*) AS n FROM chunks"
+        ).fetchone()["n"]
+        counts["chunks_embedded"] = self.con.execute(
+            "SELECT COUNT(*) AS n FROM embeddings"
+        ).fetchone()["n"]
         counts["cycles_found"] = self.con.execute(
             "SELECT COUNT(*) AS n FROM task_cycles"
         ).fetchone()["n"]
@@ -485,6 +491,47 @@ class Database:
             "WHERE s.task_id = ? AND s.year = ? ORDER BY s.ordinal",
             (task_id, year),
         ).fetchall()
+
+    # ── 질문 (RAG 재료) ─────────────────────────────────────────────
+    def replace_document_chunks(
+        self, doc_id: int, pieces: list[tuple[int, str, str]]
+    ) -> list[tuple[int, str]]:
+        """이 문서의 조각을 통째로 갈아 끼운다. (chunk_id, text) 목록을 돌려준다.
+
+        임베딩은 chunks에 FK CASCADE로 걸려 있어 조각을 지우면 함께 지워진다.
+        """
+        self.con.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+        out: list[tuple[int, str]] = []
+        for ordinal, locator, text in pieces:
+            cur = self.con.execute(
+                "INSERT INTO chunks(doc_id, ordinal, locator, text) VALUES (?, ?, ?, ?)",
+                (doc_id, ordinal, locator, text),
+            )
+            out.append((cur.lastrowid, text))
+        return out
+
+    def save_chunk_embedding(self, chunk_id: int, model: str, dim: int, vector: bytes) -> None:
+        self.con.execute(
+            "INSERT INTO embeddings(chunk_id, model, dim, vector) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(chunk_id) DO UPDATE SET "
+            "model = excluded.model, dim = excluded.dim, vector = excluded.vector",
+            (chunk_id, model, dim, vector),
+        )
+
+    def save_question(
+        self, question: str, answer: str, citations: str, withheld: bool, model: str
+    ) -> int:
+        cur = self.con.execute(
+            "INSERT INTO questions(question, answer, citations, withheld, model) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (question, answer, citations, int(withheld), model),
+        )
+        return cur.lastrowid
+
+    def rate_question(self, question_id: int, rating: str) -> None:
+        self.con.execute(
+            "UPDATE questions SET rating = ? WHERE id = ?", (rating, question_id)
+        )
 
     def unclassified_count(self) -> int:
         return self.con.execute(

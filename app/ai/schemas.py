@@ -48,6 +48,15 @@ KEYWORDS_SCHEMA: dict[str, Any] = {
     "required": ["keywords"],
 }
 
+ASK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "answered": {"type": "boolean"},
+        "answer": {"type": "string"},
+    },
+    "required": ["answered", "answer"],
+}
+
 NAME_TASK_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {

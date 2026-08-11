@@ -73,19 +73,19 @@ def main(argv: list[str] | None = None) -> int:
         name = f"{year}_{task}_{step.replace(' ', '')}{suffix}"
         body = _body(task, year, month, step, doctype)
 
-        made += _write(folder / f"{name}.{ext}", ext, name, body)
+        made += _write(folder / f"{name}.{ext}", ext, name, body, task)
 
         # 3개마다 완전 중복본을 하나 더 둔다 (해시 중복 검증)
         if index % 7 == 0:
             dup = out / "기타" / f"{name}_복사본.{ext}"
             dup.parent.mkdir(parents=True, exist_ok=True)
-            made += _write(dup, ext, name, body)
+            made += _write(dup, ext, name, body, task)
 
     # 시점 단서가 파일시스템 수정일뿐인 문서 (⑤로만 판정되는 케이스)
     noclue = out / "참고"
     noclue.mkdir(parents=True, exist_ok=True)
     made += _write(noclue / "회의자료.txt", "txt", "회의자료",
-                   "부서 내부 논의 내용 정리. 연도 표기 없음.")
+                   "부서 내부 논의 내용 정리. 연도 표기 없음.", "기타")
     # HWPX 표본
     made += _write_hwpx(out / "2024" / "2024_행정사무감사_제출자료_최종.hwpx",
                         _body("행정사무감사", 2024, 10, "제출자료", "보고서"))
@@ -119,12 +119,12 @@ def _body(task: str, year: int, month: int, step: str, doctype: str) -> str:
     ])
 
 
-def _write(path: Path, ext: str, title: str, body: str) -> int:
+def _write(path: Path, ext: str, title: str, body: str, task: str = "기타") -> int:
     try:
         if ext == "docx":
             _write_docx(path, title, body)
         elif ext == "xlsx":
-            _write_xlsx(path, title, body)
+            _write_xlsx(path, title, body, task)
         elif ext == "pptx":
             _write_pptx(path, title, body)
         elif ext == "pdf":
@@ -155,7 +155,21 @@ def _write_docx(path: Path, title: str, body: str) -> None:
     doc.save(str(path))
 
 
-def _write_xlsx(path: Path, title: str, body: str) -> None:
+# 업무별 집계 시트 내용. 모든 xlsx에 같은 낱말을 박아 넣으면 그 낱말이
+# 모든 업무를 오염시킨다 — 실제로 "수질검사"를 모든 xlsx에 하드코딩했다가
+# RAG 검색이 무관한 예산관리·월간실적보고 문서를 근거로 잡는 것을 실측으로
+# 확인했다. 업무마다 실제로 있을 법한 항목으로 나눠 이 오염을 없앤다.
+_TALLY_BY_TASK: dict[str, list[tuple[str, int, int, int, int]]] = {
+    "수질통계": [("수질검사", 120, 133, 128, 141), ("민원", 12, 9, 15, 7)],
+    "예산관리": [("예산요구액", 820, 0, 0, 0), ("집행액", 0, 210, 430, 180)],
+    "월간실적보고": [("처리건수", 41, 38, 45, 39), ("완료율", 92, 88, 95, 90)],
+}
+_TALLY_DEFAULT: list[tuple[str, int, int, int, int]] = [
+    ("건수", 10, 12, 9, 14), ("비고", 0, 0, 0, 0)
+]
+
+
+def _write_xlsx(path: Path, title: str, body: str, task: str = "기타") -> None:
     import openpyxl
 
     wb = openpyxl.Workbook()
@@ -166,7 +180,7 @@ def _write_xlsx(path: Path, title: str, body: str) -> None:
         ws.cell(row=i, column=1, value=line)
     data = wb.create_sheet("집계")
     data.append(["구분", "1분기", "2분기", "3분기", "4분기"])
-    for name, *nums in [("수질검사", 120, 133, 128, 141), ("민원", 12, 9, 15, 7)]:
+    for name, *nums in _TALLY_BY_TASK.get(task, _TALLY_DEFAULT):
         data.append([name, *nums])
     wb.properties.creator = "홍길동"
     wb.save(str(path))
