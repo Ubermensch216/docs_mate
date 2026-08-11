@@ -20,6 +20,7 @@ from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 from ..ai import OllamaClient
 from ..ai.discover import discover
 from ..core import dating, timeline
+from ..core.labeling import label_document
 from ..db import Database
 from ..ingest import scanner
 from ..search import pack
@@ -37,6 +38,7 @@ STAGE_DATE = "시점 확인"
 STAGE_EMBED = "의미 색인"
 STAGE_DISCOVER = "업무 파악"
 STAGE_CYCLES = "일정 파악"
+STAGE_STEPS = "처리 순서 파악"
 
 # 임베딩에 쓸 글자 수. 파일명과 앞부분만으로도 문서의 정체는 거의 드러난다.
 EMBED_CHARS = 1200
@@ -95,6 +97,8 @@ class Pipeline(QObject):
                 self._discover(db)
             if not self._stop:
                 self._cycles(db)
+            if not self._stop:
+                self._steps(db)
             db.audit("pipeline.stop", result="cancelled" if self._stop else "completed")
         except Exception as exc:  # 워커가 조용히 죽으면 사용자는 영문을 모른다
             import traceback
@@ -419,6 +423,53 @@ class Pipeline(QObject):
         # cycles_found==0(반복을 하나도 못 찾음)과 '아직 안 살펴봄'을 구분해야
         # 매 실행마다 파이프라인이 불필요하게 다시 도는 것을 막을 수 있다.
         db.set_meta("cycles_checked", "1")
+        self.stage_done.emit(report)
+
+
+    # ── 8단계: 처리 순서 파악 (How) ─────────────────────────────────
+    def _steps(self, db: Database) -> None:
+        """업무·연도마다 문서를 시간순으로 늘어놓아 처리 순서를 재현한다.
+
+        When과 같은 격자를 가로로 읽는 것이라 AI를 쓰지 않는다. 라벨링도
+        규칙 기반이라(core/labeling.py) Ollama가 꺼져 있어도 이 단계는
+        항상 돈다.
+        """
+        tasks = db.tasks()
+        total_years = sum(len(db.task_years(t["id"])) for t in tasks)
+        report = StageReport(STAGE_STEPS, total=total_years)
+        done = 0
+        steps_made = 0
+
+        for task in tasks:
+            for year in db.task_years(task["id"]):
+                if self._stop:
+                    break
+                rows = db.task_year_documents(task["id"], year)
+                candidates = [
+                    timeline.StepCandidate(
+                        doc_id=row["id"],
+                        month=row["month"],
+                        day=int(row["eff_date"][8:10]) if row["eff_precision"] == "day" else None,
+                        label=label_document(row["filename"]),
+                    )
+                    for row in rows
+                ]
+                steps = timeline.reconstruct_steps(candidates, year)
+                db.replace_task_steps(task["id"], year, [
+                    {
+                        "ordinal": s.ordinal, "label": s.label, "month": s.month,
+                        "day_hint": s.day_hint, "doc_id": s.doc_id, "gap_note": s.gap_note,
+                    }
+                    for s in steps
+                ])
+                steps_made += len(steps)
+                done += 1
+                if done % 5 == 0 or done == total_years:
+                    self.progress.emit(STAGE_STEPS, done, total_years, task["name"])
+
+        report.done = report.total
+        report.note = f"{steps_made:,}단계 재구성" if steps_made else "재구성할 자료가 없습니다"
+        db.set_meta("steps_checked", "1")
         self.stage_done.emit(report)
 
 

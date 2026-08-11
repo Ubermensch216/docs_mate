@@ -16,9 +16,13 @@ from app.core.timeline import (
     QUARTERLY,
     YEARLY,
     DatedDoc,
+    StepCandidate,
     build_grid,
+    day_bucket,
     day_hint,
+    default_how_year,
     detect_cycle,
+    reconstruct_steps,
 )
 
 
@@ -253,3 +257,120 @@ def test_day_hint_single_day_repeated():
         DatedDoc(doc_id=2, year=2025, month=12, day=1),
     ]
     assert day_hint(docs, months=[12]) == "1일"
+
+
+# ══════════════════════════════════════════════════════════════════
+# How — 같은 격자를 가로로 읽는다
+# ══════════════════════════════════════════════════════════════════
+
+def _cand(doc_id: int, month: int, day: int | None, label: str = "제출") -> StepCandidate:
+    return StepCandidate(doc_id=doc_id, month=month, day=day, label=label)
+
+
+# ── day_bucket ──────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "day, expected",
+    [(1, "초"), (10, "초"), (11, "중"), (20, "중"), (21, "말"), (31, "말"), (None, "")],
+)
+def test_day_bucket_ranges(day, expected):
+    assert day_bucket(day) == expected
+
+
+# ── reconstruct_steps ───────────────────────────────────────────────
+
+def test_steps_are_ordered_chronologically_within_the_year():
+    candidates = [
+        _cand(1, 11, 5, "질의응답 대응"),
+        _cand(2, 9, 3, "접수"),
+        _cand(3, 10, 12, "제출"),
+    ]
+    steps = reconstruct_steps(candidates, year=2024)
+    assert [s.doc_id for s in steps] == [2, 3, 1]
+    assert [s.ordinal for s in steps] == [1, 2, 3]
+
+
+def test_every_step_is_anchored_to_a_document():
+    """문서 없는 단계는 만들지 않는다 — 모든 Step은 doc_id를 갖는다."""
+    candidates = [_cand(1, 9, 3), _cand(2, 10, 12)]
+    steps = reconstruct_steps(candidates, year=2024)
+    assert all(s.doc_id is not None for s in steps)
+    assert {s.doc_id for s in steps} == {1, 2}
+
+
+def test_day_hint_includes_bucket_when_day_known():
+    steps = reconstruct_steps([_cand(1, 9, 5)], year=2024)
+    assert steps[0].day_hint == "9월 초"
+
+
+def test_day_hint_omits_bucket_when_day_unknown():
+    steps = reconstruct_steps([_cand(1, 9, None)], year=2024)
+    assert steps[0].day_hint == "9월"
+
+
+def test_large_gap_between_precise_dates_is_flagged():
+    """③과 ④ 사이 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다."""
+    candidates = [_cand(1, 9, 5), _cand(2, 10, 1)]   # 9/5 -> 10/1 = 26일
+    steps = reconstruct_steps(candidates, year=2024, gap_threshold_days=10)
+    assert steps[1].gap_note is not None
+    assert "1과 2 사이" in steps[1].gap_note
+    assert "확인되지 않습니다" in steps[1].gap_note
+
+
+def test_small_gap_is_not_flagged():
+    candidates = [_cand(1, 9, 1), _cand(2, 9, 5)]   # 4일
+    steps = reconstruct_steps(candidates, year=2024, gap_threshold_days=10)
+    assert steps[1].gap_note is None
+
+
+def test_gap_is_not_computed_when_day_precision_is_missing():
+    """정확한 날짜를 모르면 공백의 길이도 모른다 — 지어내지 않는다."""
+    candidates = [_cand(1, 9, None), _cand(2, 12, None)]
+    steps = reconstruct_steps(candidates, year=2024, gap_threshold_days=10)
+    assert all(s.gap_note is None for s in steps)
+
+
+def test_gap_note_uses_weeks_not_raw_days():
+    candidates = [_cand(1, 1, 1), _cand(2, 3, 1)]   # 59일 ≈ 8주
+    steps = reconstruct_steps(candidates, year=2024, gap_threshold_days=10)
+    assert "주" in steps[1].gap_note
+
+
+def test_single_candidate_yields_one_step_without_gap():
+    steps = reconstruct_steps([_cand(1, 9, 5)], year=2024)
+    assert len(steps) == 1
+    assert steps[0].gap_note is None
+
+
+def test_empty_candidates_yield_no_steps():
+    assert reconstruct_steps([], year=2024) == []
+
+
+def test_same_month_same_day_documents_are_both_kept():
+    """같은 날 문서가 여럿이면(취합 자료 여러 건) 둘 다 단계로 남는다."""
+    candidates = [_cand(1, 9, 5, "취합"), _cand(2, 9, 5, "취합")]
+    steps = reconstruct_steps(candidates, year=2024)
+    assert len(steps) == 2
+
+
+def test_labels_are_carried_through_unchanged():
+    steps = reconstruct_steps([_cand(1, 9, 5, "접수"), _cand(2, 10, 1, "제출")], year=2024)
+    assert [s.label for s in steps] == ["접수", "제출"]
+
+
+# ── default_how_year ────────────────────────────────────────────────
+
+def test_default_how_year_prefers_the_most_recent_completed_year():
+    assert default_how_year([2022, 2023, 2024, 2025], today=date(2026, 8, 11)) == 2025
+
+
+def test_default_how_year_falls_back_to_current_year_if_thats_all_there_is():
+    assert default_how_year([2026], today=date(2026, 8, 11)) == 2026
+
+
+def test_default_how_year_ignores_the_in_progress_current_year_when_past_exists():
+    assert default_how_year([2025, 2026], today=date(2026, 8, 11)) == 2025
+
+
+def test_default_how_year_with_no_years_is_none():
+    assert default_how_year([], today=date(2026, 8, 11)) is None

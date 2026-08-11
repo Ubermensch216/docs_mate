@@ -266,7 +266,8 @@ class MainWindow(QMainWindow):
         # 주기를 아직 못 살핀 경우도 이어서 해야 한다.
         needs_discovery = counts["embedded"] > 0 and counts["in_task"] == 0
         needs_cycles = counts["tasks"] > 0 and self.db.get_meta("cycles_checked") is None
-        if pending or needs_discovery or needs_cycles:
+        needs_steps = counts["tasks"] > 0 and self.db.get_meta("steps_checked") is None
+        if pending or needs_discovery or needs_cycles or needs_steps:
             self._start_pipeline()
 
     def _start_pipeline(self) -> None:

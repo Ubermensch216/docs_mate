@@ -39,8 +39,22 @@ def db(tmp_path: Path):
 
 
 @pytest.fixture
-def make_window(qapp):
-    """창을 만들고 반드시 정리한다."""
+def make_window(qapp, monkeypatch):
+    """창을 만들고 반드시 정리한다.
+
+    MainWindow는 생성 시 미완료 작업(스캔·해시·파싱·의미색인·업무파악·
+    주기·순서)이 있으면 백그라운드 파이프라인을 자동으로 켠다(ING-006
+    재개). 이 파일은 정적 렌더링만 검증하는데, 우리가 심어 둔 가짜 문서는
+    실제 임베딩이 없어 "미완료"로 잡히므로 거의 항상 파이프라인이 켜진다.
+    그 파이프라인이 가짜 소스 경로(D:\\자료 등)를 실제로 스캔해 문서를
+    '원본 없음'으로 마킹하거나 cycles/steps를 재계산해 시드 데이터를
+    덮어쓰면서 조립 중인 어서션과 경합한다 — 실제로 이 경합이 간헐적
+    실패를 일으켰다. 자동 재개 자체를 구조적으로 막는다. 파이프라인 동작
+    검증은 test_cycles_pipeline.py / test_steps_pipeline.py 등 전용 시험이
+    맡는다.
+    """
+    monkeypatch.setattr(MainWindow, "_resume_if_pending", lambda self: None)
+
     created: list[MainWindow] = []
 
     def factory(db: Database) -> MainWindow:
@@ -403,6 +417,106 @@ def _button_widgets(widget):
     from PySide6.QtWidgets import QPushButton
 
     return [b for b in widget.findChildren(QPushButton) if b.text()]
+
+
+def _seed_steps(db: Database, task_id: int, year: int, steps: list[dict]) -> None:
+    for step in steps:
+        db.con.execute(
+            "INSERT INTO task_steps(task_id, year, ordinal, label, month, "
+            "day_hint, doc_id, gap_note, decided_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ai')",
+            (task_id, year, step["ordinal"], step["label"], step["month"],
+             step["day_hint"], step.get("doc_id"), step.get("gap_note")),
+        )
+
+
+def test_task_detail_shows_how_section_with_ordered_steps(make_window, db):
+    """How는 What 다음, 문서 목록 앞에 온다. 모든 단계에 근거 문서가 붙는다."""
+    task_id = _seed_task(db)
+    docs = db.task_documents(task_id)
+    _seed_steps(db, task_id, 2025, [
+        {"ordinal": 1, "label": "접수", "month": 9, "day_hint": "9월 초",
+         "doc_id": docs[0]["id"]},
+        {"ordinal": 2, "label": "제출", "month": 10, "day_hint": "10월",
+         "doc_id": docs[0]["id"], "gap_note": "1과 2 사이 약 3주는 관련 자료가 없어 확인되지 않습니다"},
+    ])
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    texts = _labels(view)
+    assert any(t == "How" for t in texts)
+    assert any("2025년엔 이렇게 처리한 것으로 보입니다" in t for t in texts), texts
+    assert any("접수" in t for t in texts)
+    assert any("확인되지 않습니다" in t for t in texts), "공백을 지어내지 않고 밝혀야 합니다"
+
+
+def test_task_detail_without_steps_explains_absence(make_window, db):
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    texts = _labels(view)
+    assert any(t == "How" for t in texts)
+    assert any("재구성할 자료가 없습니다" in t for t in texts), texts
+
+
+def test_task_detail_how_year_selector_switches_steps(make_window, db, qapp):
+    """연도 전환 드롭다운을 바꾸면 그 해의 단계가 보여야 한다."""
+    task_id = _seed_task(db)
+    docs = db.task_documents(task_id)
+    _seed_steps(db, task_id, 2025, [
+        {"ordinal": 1, "label": "제출_2025", "month": 10, "day_hint": "10월",
+         "doc_id": docs[0]["id"]},
+    ])
+    _seed_steps(db, task_id, 2023, [
+        {"ordinal": 1, "label": "제출_2023", "month": 10, "day_hint": "10월",
+         "doc_id": docs[0]["id"]},
+    ])
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    from PySide6.QtWidgets import QComboBox
+
+    combo = view.findChild(QComboBox)
+    assert combo is not None
+
+    index_2023 = combo.findData(2023)
+    assert index_2023 >= 0
+    combo.setCurrentIndex(index_2023)
+    qapp.processEvents()
+
+    texts = _labels(view)
+    assert any("제출_2023" in t for t in texts), texts
+    assert not any("제출_2025" in t for t in texts)
+
+
+def test_task_detail_how_step_opens_original_on_click(make_window, db, tmp_path):
+    """단계에 붙은 문서를 눌러 원본을 열 수 있어야 한다."""
+    task_id = _seed_task(db)
+    real_file = tmp_path / "실제문서.hwp"
+    real_file.write_text("dummy", encoding="utf-8")
+
+    source_id = db.add_source(str(tmp_path))
+    doc_id = db.upsert_document(source_id, {
+        "path": str(real_file), "filename": "실제문서.hwp", "ext": ".hwp",
+        "parse_status": "ok", "hash": "real1",
+        "eff_year": 2025, "eff_month": 10, "eff_date": "2025-10-12",
+        "eff_precision": "day", "eff_date_kind": "body",
+    })
+    _seed_steps(db, task_id, 2025, [
+        {"ordinal": 1, "label": "제출", "month": 10, "day_hint": "10월", "doc_id": doc_id},
+    ])
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    opened = []
+    view._open = lambda p: opened.append(p)
+
+    for button in _button_widgets(view):
+        if "실제문서.hwp" in button.text():
+            button.click()
+            break
+    assert opened == [str(real_file)]
 
 
 def test_documents_view_hides_non_document_files_by_default(make_window, db):

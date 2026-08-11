@@ -17,6 +17,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -65,6 +66,7 @@ class TasksView(QWidget):
         super().__init__(parent)
         self.db = db
         self._task_id: int | None = None   # None이면 목록, 값이 있으면 상세
+        self._how_year: dict[int, int] = {}   # task_id -> 사용자가 고른 연도
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -253,6 +255,7 @@ class TasksView(QWidget):
 
         self._render_reading(task_id)
         self._render_when(task_id)
+        self._render_how(task_id)
         self._render_by_year(task_id)
 
     def _render_reading(self, task_id: int) -> None:
@@ -344,6 +347,73 @@ class TasksView(QWidget):
                 go.clicked.connect(self.go_calendar.emit)
                 foot.addWidget(go)
                 self.column.addLayout(foot)
+
+    def _render_how(self, task_id: int) -> None:
+        """How — 같은 격자를 가로로 읽어 처리 순서를 재현한다.
+
+        인과관계 추론이 아니라 시간 근접 + 문서 유형 순서에 기반한
+        재구성이므로 "~로 보입니다" 톤을 유지한다. 모든 단계는 문서에
+        앵커링되고, 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다.
+        """
+        years = self.db.task_years(task_id)
+        self.column.addWidget(_divider())
+        self.column.addWidget(section_title("How"))
+
+        if not years:
+            self.column.addWidget(
+                UnknownBlock("처리 순서를 재구성할 자료가 없습니다.")
+            )
+            return
+
+        default_year = timeline.default_how_year(years)
+        selected = self._how_year.get(task_id, default_year)
+        if selected not in years:
+            selected = default_year
+
+        header = QHBoxLayout()
+        header.setSpacing(theme.SP_SM)
+        header.addWidget(muted_label(f"{selected}년엔 이렇게 처리한 것으로 보입니다"))
+        header.addStretch(1)
+
+        ordered_years = sorted(years, reverse=True)
+        combo = QComboBox()
+        for y in ordered_years:
+            combo.addItem(f"{y}년으로 보기", y)
+        combo.setCurrentIndex(ordered_years.index(selected))
+        combo.currentIndexChanged.connect(
+            lambda _index, t=task_id, c=combo: self._change_how_year(t, c.currentData())
+        )
+        header.addWidget(combo)
+        self.column.addLayout(header)
+
+        steps = self.db.task_steps(task_id, selected)
+        if not steps:
+            self.column.addWidget(
+                UnknownBlock(f"{selected}년에는 처리 순서를 재구성할 자료가 없습니다.")
+            )
+            return
+
+        for step in steps:
+            row = QHBoxLayout()
+            row.setSpacing(theme.SP_SM)
+            row.addWidget(muted_label(_circled(step["ordinal"]), small=True, wrap=False))
+            row.addWidget(muted_label(step["day_hint"], small=True, wrap=False))
+            row.addWidget(muted_label(step["label"], wrap=False))
+            if step["filename"]:
+                doc_btn = QPushButton(f"📄 {step['filename']}")
+                doc_btn.setObjectName("Link")
+                doc_btn.clicked.connect(lambda _=False, p=step["path"]: self._open(p))
+                row.addWidget(doc_btn)
+            row.addStretch(1)
+            self.column.addLayout(row)
+
+            # 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다.
+            if step["gap_note"]:
+                self.column.addWidget(UnknownBlock(step["gap_note"]))
+
+    def _change_how_year(self, task_id: int, year: int) -> None:
+        self._how_year[task_id] = year
+        self.refresh()
 
     def _render_by_year(self, task_id: int) -> None:
         rows = self.db.task_documents(task_id)

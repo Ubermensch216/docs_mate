@@ -171,6 +171,111 @@ def _build_guess(
     )
 
 
+# ── 처리 순서 (How) — 같은 격자를 가로로 읽는다 ─────────────────────
+
+GAP_THRESHOLD_DAYS = 10   # 이 이상 비면 '확인되지 않는 구간'으로 표시한다
+
+
+@dataclass(slots=True)
+class StepCandidate:
+    doc_id: int
+    month: int
+    day: int | None
+    label: str
+
+
+@dataclass(slots=True)
+class Step:
+    ordinal: int
+    doc_id: int
+    label: str
+    month: int
+    day_hint: str
+    gap_note: str | None = None
+
+
+def day_bucket(day: int | None) -> str:
+    """일(day)을 초·중·말로 뭉친다. 정밀한 날짜가 없으면 빈 문자열."""
+    if day is None:
+        return ""
+    if day <= 10:
+        return "초"
+    if day <= 20:
+        return "중"
+    return "말"
+
+
+def reconstruct_steps(
+    candidates: list[StepCandidate],
+    year: int,
+    gap_threshold_days: int = GAP_THRESHOLD_DAYS,
+) -> list[Step]:
+    """문서를 시간순으로 늘어놓아 처리 순서를 재현한다.
+
+    이것은 인과관계 추론이 아니라 **시간 근접 + 문서 유형 순서**에 기반한
+    재구성이다. 모든 단계는 문서에 앵커링된다 — 문서 없는 단계는 만들지
+    않는다. 두 단계 사이에 근거 없는 공백이 있으면 지어내지 않고 그렇다고
+    밝힌다.
+
+    day가 없는(월 단위로만 알려진) 문서 사이의 공백은 재지 않는다 — 정확한
+    날짜를 모르는데 "2주 비었다"고 말하면 없는 것을 지어내는 셈이다.
+    """
+    ordered = sorted(
+        candidates,
+        key=lambda c: (c.month, c.day if c.day is not None else 1, c.doc_id),
+    )
+
+    steps: list[Step] = []
+    prev_date: date | None = None
+    for index, candidate in enumerate(ordered, start=1):
+        bucket = day_bucket(candidate.day)
+        day_hint_text = f"{candidate.month}월 {bucket}" if bucket else f"{candidate.month}월"
+
+        gap_note = None
+        if candidate.day is not None and prev_date is not None:
+            try:
+                current_date = date(year, candidate.month, candidate.day)
+            except ValueError:
+                current_date = None
+            if current_date is not None:
+                delta_days = (current_date - prev_date).days
+                if delta_days >= gap_threshold_days:
+                    weeks = max(1, round(delta_days / 7))
+                    gap_note = (
+                        f"{index - 1}과 {index} 사이 약 {weeks}주는 "
+                        "관련 자료가 없어 확인되지 않습니다"
+                    )
+                prev_date = current_date
+        elif candidate.day is not None:
+            prev_date = date(year, candidate.month, candidate.day)
+
+        steps.append(
+            Step(
+                ordinal=index,
+                doc_id=candidate.doc_id,
+                label=candidate.label,
+                month=candidate.month,
+                day_hint=day_hint_text,
+                gap_note=gap_note,
+            )
+        )
+    return steps
+
+
+def default_how_year(years: list[int], today: date | None = None) -> int | None:
+    """처리 순서를 보여줄 기본 연도. 완결된 최근 연도를 우선한다.
+
+    올해는 아직 진행 중이라 처리 순서가 끝까지 안 보일 수 있다. 완결된
+    연도가 있으면 그걸 먼저 보여주고, 없으면(자료가 올해뿐이면) 올해라도
+    보여준다 — 아무것도 안 보여주는 것보다는 낫다.
+    """
+    if not years:
+        return None
+    today = today or date.today()
+    past = [y for y in years if y < today.year]
+    return max(past) if past else max(years)
+
+
 def day_hint(docs: list[DatedDoc], months: list[int] | None) -> str | None:
     """관측된 날짜의 일(day) 범위로 '5~10일' 같은 힌트를 만든다.
 

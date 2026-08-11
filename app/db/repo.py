@@ -422,6 +422,70 @@ class Database:
             (task_id,),
         ).fetchall()
 
+    # ── 처리 순서 (How) ─────────────────────────────────────────────
+    def task_year_documents(self, task_id: int, year: int) -> list[sqlite3.Row]:
+        """이 업무·이 연도의 문서를 처리 순서 재구성용으로 돌려준다.
+
+        완전 중복본은 하나만, 파일 수정일로만 판정된 것은 제외한다 — When과
+        같은 기준이다. 같은 격자를 가로로 읽는 것이 How이기 때문이다.
+        """
+        return self.con.execute(
+            """
+            SELECT d.id, d.filename, d.eff_month AS month, d.eff_date,
+                   d.eff_precision
+            FROM task_docs td
+            JOIN documents d ON d.id = td.doc_id
+            WHERE td.task_id = ? AND d.eff_year = ? AND d.missing_since IS NULL
+              AND d.eff_month IS NOT NULL AND d.eff_date_kind != 'fs'
+              AND (d.hash IS NULL OR d.id = (
+                    SELECT MIN(x.id) FROM documents x
+                    WHERE x.hash = d.hash AND x.missing_since IS NULL))
+            """,
+            (task_id, year),
+        ).fetchall()
+
+    def task_years(self, task_id: int) -> list[int]:
+        rows = self.con.execute(
+            """
+            SELECT DISTINCT d.eff_year AS year
+            FROM task_docs td JOIN documents d ON d.id = td.doc_id
+            WHERE td.task_id = ? AND d.missing_since IS NULL
+              AND d.eff_year IS NOT NULL AND d.eff_month IS NOT NULL
+              AND d.eff_date_kind != 'fs'
+            ORDER BY d.eff_year
+            """,
+            (task_id,),
+        ).fetchall()
+        return [row["year"] for row in rows]
+
+    def replace_task_steps(self, task_id: int, year: int, steps: list[dict]) -> None:
+        """이 업무·이 연도의 AI 제안 단계를 통째로 갈아 끼운다.
+
+        사람이 고친 단계(decided_by='user')는 건드리지 않는다 (NFR-SAF-004).
+        """
+        self.con.execute(
+            "DELETE FROM task_steps WHERE task_id = ? AND year = ? AND decided_by = 'ai'",
+            (task_id, year),
+        )
+        for step in steps:
+            self.con.execute(
+                "INSERT INTO task_steps"
+                "(task_id, year, ordinal, label, month, day_hint, doc_id, "
+                " is_inferred, gap_note) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                (
+                    task_id, year, step["ordinal"], step["label"], step["month"],
+                    step["day_hint"], step["doc_id"], step.get("gap_note"),
+                ),
+            )
+
+    def task_steps(self, task_id: int, year: int) -> list[sqlite3.Row]:
+        return self.con.execute(
+            "SELECT s.*, d.filename, d.path FROM task_steps s "
+            "LEFT JOIN documents d ON d.id = s.doc_id "
+            "WHERE s.task_id = ? AND s.year = ? ORDER BY s.ordinal",
+            (task_id, year),
+        ).fetchall()
+
     def unclassified_count(self) -> int:
         return self.con.execute(
             "SELECT COUNT(*) AS n FROM documents d "
