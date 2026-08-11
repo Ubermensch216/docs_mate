@@ -1,0 +1,21 @@
+# 실행 환경
+.venv/
+__pycache__/
+*.pyc
+
+# 시험
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 프로젝트 데이터 (분석 대상 자료를 포함할 수 있으므로 커밋하지 않는다)
+*.db
+*.db-wal
+*.db-shm
+
+# 합성 표본 (app.tools.make_fixtures 로 재생성 가능)
+tests/fixtures/sample_tree/
+
+# 편집기
+.vscode/
+.idea/
