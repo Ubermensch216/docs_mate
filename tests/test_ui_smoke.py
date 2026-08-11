@@ -182,6 +182,119 @@ def test_documents_view_collapses_exact_duplicates(make_window, db):
     assert view.table.rowCount() == 3
 
 
+def _seed_task(db: Database) -> int:
+    """업무 하나와 문서 세 건을 심는다."""
+    source_id = db.add_source(r"D:\자료")
+    db.con.execute(
+        "INSERT INTO tasks(name, description, origin, status, confidence) "
+        "VALUES ('행정사무감사', '의회 요구자료를 취합해 제출하는 업무입니다.', "
+        "        'ai', 'proposed', 'high')"
+    )
+    task_id = db.con.execute("SELECT id FROM tasks").fetchone()["id"]
+    for index in range(3):
+        name = f"202{index + 3}_행정사무감사_제출자료_최종.docx"
+        doc_id = db.upsert_document(source_id, {
+            "path": rf"D:\자료\{name}", "filename": name, "ext": ".docx",
+            "parse_status": "ok", "hash": f"h{index}", "char_count": 900,
+            "eff_year": 2023 + index, "eff_date": f"202{index + 3}-10-01",
+            "eff_date_kind": "body", "eff_precision": "month",
+        })
+        db.con.execute(
+            "INSERT INTO task_docs(task_id, doc_id, origin) VALUES (?, ?, 'ai')",
+            (task_id, doc_id),
+        )
+        db.con.execute(
+            "INSERT INTO task_reading(task_id, doc_id, ordinal, score, reason) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (task_id, doc_id, index + 1, 5.0 - index, "'제출' 표기가 있습니다"),
+        )
+    return task_id
+
+
+def test_tasks_view_announces_the_discovered_count(make_window, db):
+    """첫 화면이 곧 정체성의 답이다 — 파일 개수가 아니라 업무 개수."""
+    _seed_task(db)
+    window = make_window(db)
+    window.go("tasks")
+    texts = _labels(window.views["tasks"])
+    assert any("업무는 1개로 추정됩니다" in t for t in texts), texts
+
+
+def test_task_detail_shows_reading_list_with_reasons(make_window, db):
+    """이유 없는 추천은 만들지 않는다."""
+    task_id = _seed_task(db)
+    window = make_window(db)
+    view = window.views["tasks"]
+    view.open_task(task_id)
+
+    texts = _labels(view) + _buttons(view)
+    assert any("먼저 읽을 문서" in t for t in texts)
+    assert any("'제출' 표기가 있습니다" in t for t in texts), texts
+    assert any("2025_행정사무감사" in t for t in texts)
+
+
+def test_task_detail_can_return_to_the_list(make_window, db):
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+    view.back()
+    assert any("추정됩니다" in t for t in _labels(view))
+
+
+def test_renaming_a_task_marks_it_as_user_edited(make_window, db):
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    assert db.rename_task(task_id, "의회 대응")
+    view.refresh()
+
+    row = db.task(task_id)
+    assert row["name"] == "의회 대응"
+    assert row["status"] == "edited"
+
+
+def test_detaching_a_document_updates_the_view(make_window, db):
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+    victim = db.task_documents(task_id)[0]["id"]
+
+    view._detach(task_id, victim)
+
+    assert victim not in {r["id"] for r in db.task_documents(task_id)}
+
+
+def test_tasks_view_shows_progress_before_any_task_exists(make_window, db):
+    _add_docs(db, count=4, parsed=2)
+    window = make_window(db)
+    window.go("tasks")
+    texts = _labels(window.views["tasks"])
+    assert any("살펴보고 있습니다" in t for t in texts), texts
+    assert any("업무는 아직 파악하지 못했습니다" in t for t in texts), texts
+
+
+def test_unclassified_documents_are_shown_not_hidden(make_window, db):
+    """미분류가 남는 것은 정상이다. 숨기면 사용자가 속는다."""
+    task_id = _seed_task(db)
+    db.upsert_document(1, {
+        "path": r"D:\자료\정체불명.hwp", "filename": "정체불명.hwp", "ext": ".hwp",
+        "parse_status": "ok", "hash": "zzz",
+    })
+    window = make_window(db)
+    window.go("tasks")
+    texts = _labels(window.views["tasks"])
+    assert any("미분류 1건" in t for t in texts), texts
+
+
+def _labels(widget) -> list[str]:
+    return [label.text() for label in widget.findChildren(QLabel) if label.text()]
+
+
+def _buttons(widget) -> list[str]:
+    from PySide6.QtWidgets import QPushButton
+
+    return [b.text() for b in widget.findChildren(QPushButton) if b.text()]
+
+
 def test_documents_view_hides_non_document_files_by_default(make_window, db):
     source_id = db.add_source(r"D:\혼합")
     db.upsert_document(source_id, {
