@@ -27,9 +27,10 @@ from dataclasses import dataclass
 from datetime import date
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QGridLayout,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -49,9 +50,12 @@ from ..widgets import (
     Badge,
     Card,
     EmptyState,
+    ListRow,
+    SubPanel,
     UnknownBlock,
     clear_layout,
     muted_label,
+    note_label,
     open_original,
     view_title,
 )
@@ -129,21 +133,28 @@ class TabBar(QWidget):
 
 
 class Page(QWidget):
-    """탭 하나의 내용. 각자 스크롤한다 — 탭을 바꿔도 남의 스크롤이 따라오지 않는다."""
+    """탭 하나의 내용. 각자 스크롤한다 — 탭을 바꿔도 남의 스크롤이 따라오지 않는다.
+
+    바탕은 흰색이 아니라 한 단계 낮춘 회색이다. 흰 종이 위에 흰 카드를
+    올리면 카드가 카드로 보이지 않는다 — 이 화면의 시인성 문제 절반이
+    거기서 왔다.
+    """
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setObjectName("Content")
+        scroll.setObjectName("PageScroll")
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
         body = QWidget()
-        body.setObjectName("Content")
+        body.setObjectName("PageBody")
         body.setAutoFillBackground(True)
         self.column = QVBoxLayout(body)
-        self.column.setContentsMargins(0, theme.SP_LG, theme.SP_LG, theme.SP_XL)
+        self.column.setContentsMargins(
+            theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_XL
+        )
         self.column.setSpacing(theme.SP_MD)
         self.column.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(body)
@@ -165,23 +176,37 @@ class CalendarView(QWidget):
         super().__init__(parent)
         self.db = db
         self._tab = YEAR
+        self.setObjectName("Canvas")
+        self.setAutoFillBackground(True)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(theme.SP_XL, theme.SP_XL, theme.SP_XL, 0)
-        outer.setSpacing(theme.SP_MD)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # 제목·설명·탭은 흰 띠 하나에 묶는다. 본문 바탕과 색이 갈리면
+        # 탭이 "본문 위에 떠 있는 글자"가 아니라 "머리에 붙은 손잡이"로
+        # 읽힌다 — 탭을 못 알아보던 문제의 절반이 이 경계였다.
+        header = QWidget()
+        header.setObjectName("ViewHeader")
+        header.setAutoFillBackground(True)
+        head_column = QVBoxLayout(header)
+        head_column.setContentsMargins(theme.SP_XL, theme.SP_XL, theme.SP_XL, 0)
+        head_column.setSpacing(theme.SP_SM)
 
         # 정체성 문구는 탭 위에 상주한다. 어느 탭에 있든 "이건 내가 입력한
         # 달력이 아니다"라는 사실이 화면에서 사라지면 안 된다.
-        outer.addWidget(view_title("자료에서 발견한 업무 일정"))
+        head_column.addWidget(view_title("자료에서 발견한 업무 일정"))
         self.lead = muted_label(
             "전임자 자료에 남은 시기를 읽어 추정한 일정입니다. "
             "직접 입력한 달력이 아니므로, 확인하고 고칠 수 있습니다."
         )
-        outer.addWidget(self.lead)
+        head_column.addWidget(self.lead)
 
         self.tabs = TabBar()
         self.tabs.switched.connect(self._switch)
-        outer.addWidget(self.tabs)
+        head_column.addSpacing(theme.SP_SM)
+        head_column.addWidget(self.tabs)
+        outer.addWidget(header)
 
         self.stack = QStackedWidget()
         self.pages: dict[str, Page] = {}
@@ -274,45 +299,59 @@ class CalendarView(QWidget):
     # ── 연간 패턴 ──────────────────────────────────────────────────
     def _render_year(self, column: QVBoxLayout, cycles: list, today: date) -> None:
         column.addWidget(
-            muted_label(
-                f"{today.year}년 · 가로 한 줄이 업무 하나입니다. 이번 달은 진하게 "
-                f"표시됩니다. 업무 이름을 누르면 상세로 갑니다."
+            note_label(
+                f"{today.year}년 · 가로 한 줄이 업무 하나입니다. 막대가 그 업무를 "
+                f"하는 달이고, 이번 달({today.month}월)은 세로로 표시됩니다. "
+                f"업무 이름을 누르면 상세로 갑니다."
             )
         )
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(theme.SP_XS)
-        grid.setVerticalSpacing(theme.SP_XS)
+        panel = QFrame()
+        panel.setObjectName("GridPanel")
+        panel.setFixedWidth(_grid_width())
+        stack = QVBoxLayout(panel)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        stack.addWidget(_grid_header(today.month))
 
-        for index, label in enumerate(MONTH_NAMES):
-            head = QLabel(label)
-            head.setObjectName("Small")
-            head.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            if index + 1 == today.month:
-                head.setStyleSheet(f"color: {theme.PRIMARY}; font-weight: 700;")
-            grid.addWidget(head, 0, index + 1)
+        for index, row in enumerate(cycles):
+            stack.addWidget(
+                self._grid_row(row, today.month, index, last=index == len(cycles) - 1)
+            )
 
-        for r, row in enumerate(cycles, start=1):
-            # 격자가 읽기만 하는 그림이면 여기서 뭔가 이상해도 확인하러 갈 길이 없다.
-            name = QPushButton(row["task_name"])
-            name.setObjectName("Link")
-            name.clicked.connect(lambda _=False, t=row["task_id"]: self.open_task.emit(t))
-            name.setToolTip(f"{cycle_headline(row)} · {_observed(row)}")
-            grid.addWidget(name, r, 0)
-
-            guess = guess_from_row(row)
-            state = status.of_cycle(row)
-            for month in range(1, 13):
-                grid.addWidget(
-                    _cell(guess.applies_to_month(month), month == today.month, state),
-                    r, month,
-                )
-
-        wrapper = QWidget()
-        wrapper.setLayout(grid)
-        wrapper.setMaximumWidth(theme.CONTENT_MAX_W)
-        column.addWidget(wrapper)
+        column.addWidget(panel, alignment=Qt.AlignmentFlag.AlignLeft)
         column.addWidget(muted_label(_legend(), small=True))
+
+    def _grid_row(self, row, current_month: int, index: int, last: bool = False) -> QFrame:
+        """격자 한 줄. 연속된 달은 하나의 막대로 이어 붙인다.
+
+        점 열두 개를 늘어놓으면 '9,10,11월'이 세 개의 점이지 한 덩어리의
+        기간으로 보이지 않는다. 이어 붙여야 한 해의 모양이 읽힌다.
+        """
+        line = QFrame()
+        line.setObjectName(
+            ("GridRow" if index % 2 == 0 else "GridRowAlt") + ("Last" if last else "")
+        )
+        line.setFixedHeight(theme.GRID_ROW_H)
+        cells = QHBoxLayout(line)
+        cells.setContentsMargins(theme.SP_MD, 0, theme.SP_MD, 0)
+        cells.setSpacing(0)
+
+        # 격자가 읽기만 하는 그림이면 여기서 뭔가 이상해도 확인하러 갈 길이 없다.
+        name = QPushButton(_elide(row["task_name"], theme.GRID_NAME_W - theme.SP_SM))
+        name.setObjectName("GridName")
+        name.setCursor(Qt.CursorShape.PointingHandCursor)
+        name.setFixedWidth(theme.GRID_NAME_W)
+        name.clicked.connect(lambda _=False, t=row["task_id"]: self.open_task.emit(t))
+        name.setToolTip(f"{row['task_name']}\n{cycle_headline(row)} · {_observed(row)}")
+        cells.addWidget(name)
+
+        guess = guess_from_row(row)
+        months = [guess.applies_to_month(m) for m in range(1, 13)]
+        state = status.of_cycle(row)
+        for month in range(1, 13):
+            cells.addWidget(_slot(months, month, current_month, state))
+        return line
 
     # ── 지금 챙길 일 ───────────────────────────────────────────────
     def _render_now(self, column: QVBoxLayout, now: list[Upcoming], today: date) -> None:
@@ -326,13 +365,16 @@ class CalendarView(QWidget):
             return
 
         column.addWidget(
-            muted_label(f"앞으로 {SOON_DAYS}일 안에 시작되거나 지금 진행 중인 업무입니다.")
+            note_label(f"앞으로 {SOON_DAYS}일 안에 시작되거나 지금 진행 중인 업무입니다.")
         )
         for entry in now:
             column.addWidget(self._now_card(entry, today))
 
     def _now_card(self, entry: Upcoming, today: date) -> QWidget:
-        card = Card()
+        # 급한 것은 왼쪽 띠로 먼저 말한다. 카드가 여러 장 쌓이면 뱃지 하나는
+        # 훑는 눈에 걸리지 않는다.
+        urgent = entry.running_now or entry.days_away <= 7
+        card = Card(tone="attention" if urgent else "primary")
         card.setMaximumWidth(theme.CONTENT_MAX_W)
 
         head = QHBoxLayout()
@@ -340,8 +382,9 @@ class CalendarView(QWidget):
         head.addWidget(_urgency(entry))
 
         name = QPushButton(entry.name)
-        name.setObjectName("Link")
-        name.setStyleSheet(f"font-size: {theme.FS_SECTION}px; font-weight: 600;")
+        name.setObjectName("CardTitle")
+        name.setCursor(Qt.CursorShape.PointingHandCursor)
+        name.setToolTip("눌러서 업무 상세로 갑니다")
         name.clicked.connect(lambda _=False, t=entry.task_id: self.open_task.emit(t))
         head.addWidget(name)
         head.addStretch(1)
@@ -379,18 +422,23 @@ class CalendarView(QWidget):
         if not docs:
             return
 
-        card.body.addWidget(muted_label("그때 남긴 문서", small=True))
+        # 근거는 옅은 판에 묶는다. 카드 본문과 같은 흰 바탕에 흘려 두면
+        # 어디까지가 '작년에 실제로 있던 문서'인지 경계가 사라진다.
+        panel = SubPanel()
+        panel.body.addWidget(muted_label("그때 남긴 문서", small=True))
         for doc in docs:
             row = QHBoxLayout()
             row.setSpacing(theme.SP_SM)
             row.addWidget(muted_label(f"{doc['eff_year']}년", small=True, wrap=False))
             link = QPushButton(f"📄 {doc['filename']}")
             link.setObjectName("Link")
+            link.setCursor(Qt.CursorShape.PointingHandCursor)
             link.setToolTip(f"{doc['path']}\n클릭하면 원본을 엽니다")
             link.clicked.connect(lambda _=False, p=doc["path"]: self._open(p))
             row.addWidget(link)
             row.addStretch(1)
-            card.body.addLayout(row)
+            panel.body.addLayout(row)
+        card.body.addWidget(panel)
 
     # ── 앞으로 올 일 ───────────────────────────────────────────────
     def _render_later(self, column: QVBoxLayout, later: list[Upcoming], today: date) -> None:
@@ -403,24 +451,29 @@ class CalendarView(QWidget):
             )
             return
 
-        column.addWidget(muted_label("가까운 순서입니다. 업무 이름을 누르면 상세로 갑니다."))
+        column.addWidget(note_label("가까운 순서입니다. 업무 이름을 누르면 상세로 갑니다."))
         for entry in later[:MAX_UPCOMING]:
-            row = QHBoxLayout()
-            row.setSpacing(theme.SP_MD)
+            line = ListRow()
+            line.setMaximumWidth(theme.CONTENT_MAX_W)
 
-            when = muted_label(_when_label(entry, today), wrap=False)
-            when.setFixedWidth(96)
-            row.addWidget(when)
+            when = QLabel(_when_label(entry, today))
+            when.setObjectName("WhenChip")
+            when.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            when.setFixedWidth(80)
+            line.row.addWidget(when)
 
             name = QPushButton(entry.name)
-            name.setObjectName("Link")
+            name.setObjectName("RowTitle")
+            name.setCursor(Qt.CursorShape.PointingHandCursor)
             name.clicked.connect(lambda _=False, t=entry.task_id: self.open_task.emit(t))
-            row.addWidget(name)
+            line.row.addWidget(name)
 
-            row.addWidget(muted_label(cycle_headline(entry.row), small=True, wrap=False))
-            row.addStretch(1)
-            row.addWidget(Badge.state(status.of_cycle(entry.row)))
-            column.addLayout(row)
+            line.row.addWidget(
+                muted_label(cycle_headline(entry.row), small=True, wrap=False)
+            )
+            line.row.addStretch(1)
+            line.row.addWidget(Badge.state(status.of_cycle(entry.row)))
+            column.addWidget(line)
 
         if len(later) > MAX_UPCOMING:
             column.addWidget(
@@ -450,38 +503,45 @@ class CalendarView(QWidget):
             key=lambda c: (status.of_cycle(c) != status.WEAK, c["years_observed"]),
         )
         column.addWidget(
-            muted_label(
+            note_label(
                 "맞다고 확인해 두면 다시 분석해도 바뀌지 않고, 다음 담당자에게 "
                 "그대로 전달됩니다. 근거가 약한 것부터 보여 줍니다."
             )
         )
 
         for row in pending[:MAX_REVIEW]:
-            line = QHBoxLayout()
-            line.setSpacing(theme.SP_SM)
-            line.addWidget(Badge.state(status.of_cycle(row)))
+            line = ListRow()
+            line.setMaximumWidth(theme.CONTENT_MAX_W)
+            line.row.setSpacing(theme.SP_SM)
+            line.row.addWidget(Badge.state(status.of_cycle(row)))
 
             name = QPushButton(row["task_name"])
-            name.setObjectName("Link")
+            name.setObjectName("RowTitle")
+            name.setCursor(Qt.CursorShape.PointingHandCursor)
             name.clicked.connect(lambda _=False, t=row["task_id"]: self.open_task.emit(t))
-            line.addWidget(name)
+            line.row.addWidget(name)
 
-            line.addWidget(muted_label(cycle_headline(row), small=True, wrap=False))
-            line.addWidget(muted_label(f"· {_review_reason(row)}", small=True, wrap=False))
-            line.addStretch(1)
+            line.row.addWidget(muted_label(cycle_headline(row), small=True, wrap=False))
+            line.row.addWidget(
+                muted_label(f"· {_review_reason(row)}", small=True, wrap=False)
+            )
+            line.row.addStretch(1)
 
-            for label, primary, slot in (
-                ("맞습니다", True, lambda _=False, t=row["task_id"]: self._confirm(t)),
-                ("수정", False, lambda _=False, t=row["task_id"]: self._edit(t)),
-                ("반복 아님", False, lambda _=False, t=row["task_id"],
-                                    n=row["task_name"]: self._not_recurring(t, n)),
+            # 세 동작의 무게가 다르다는 것이 모양에서 보여야 한다 — 확인은
+            # 테두리 있는 강조, 나머지는 조용한 버튼.
+            for label, style, slot in (
+                ("맞습니다", "Confirm", lambda _=False, t=row["task_id"]: self._confirm(t)),
+                ("수정", "Quiet", lambda _=False, t=row["task_id"]: self._edit(t)),
+                ("반복 아님", "Quiet", lambda _=False, t=row["task_id"],
+                                      n=row["task_name"]: self._not_recurring(t, n)),
             ):
                 button = QPushButton(label)
-                button.setObjectName("" if primary else "Link")
+                button.setObjectName(style)
+                button.setCursor(Qt.CursorShape.PointingHandCursor)
                 button.clicked.connect(slot)
-                line.addWidget(button)
+                line.row.addWidget(button)
 
-            column.addLayout(line)
+            column.addWidget(line)
 
         if len(pending) > MAX_REVIEW:
             column.addWidget(
@@ -615,21 +675,96 @@ def _legend() -> str:
     )
 
 
-def _cell(filled: bool, is_current: bool, state: str) -> QLabel:
-    """격자 한 칸. 확인된 주기는 진하게, 추정은 옅게 — 색만으로 구분하지 않는다."""
-    if not filled:
-        text, color = "·", theme.TEXT_DISABLED
-    elif state == status.CONFIRMED:
-        text, color = "●", theme.PRIMARY
-    elif state == status.INFERRED:
-        text, color = "●", theme.TEXT_MUTED
-    else:
-        text, color = "○", theme.TEXT_MUTED
+def _elide(text: str, width: int) -> str:
+    """이름이 칸을 넘치면 잘라 준다. 전체 이름은 툴팁에 남는다."""
+    metrics = QFontMetrics(QLabel().font())
+    return metrics.elidedText(text, Qt.TextElideMode.ElideRight, width)
 
-    cell = QLabel(text)
-    cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    cell.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    cell.setFixedWidth(28)
-    weight = "700" if (filled and is_current) else "400"
-    cell.setStyleSheet(f"color: {color}; font-weight: {weight};")
-    return cell
+
+def _grid_width() -> int:
+    return theme.GRID_NAME_W + theme.GRID_CELL_W * 12 + theme.SP_MD * 2
+
+
+def _grid_header(current_month: int) -> QFrame:
+    """월 머리줄. 이번 달만 칠해 세로 기준선을 만든다."""
+    head = QFrame()
+    head.setObjectName("GridHeadRow")
+    head.setFixedHeight(theme.GRID_ROW_H)
+    row = QHBoxLayout(head)
+    row.setContentsMargins(theme.SP_MD, 0, theme.SP_MD, 0)
+    row.setSpacing(0)
+
+    corner = QLabel("업무")
+    corner.setObjectName("GridHeadCell")
+    corner.setFixedWidth(theme.GRID_NAME_W)
+    row.addWidget(corner)
+
+    for index, label in enumerate(MONTH_NAMES, start=1):
+        cell = QLabel(label)
+        now = index == current_month
+        cell.setObjectName("GridHeadCellNow" if now else "GridHeadCell")
+        cell.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cell.setFixedWidth(theme.GRID_CELL_W)
+        if now:
+            cell.setFixedHeight(theme.GRID_ROW_H - theme.SP_SM)
+            row.addWidget(cell, 0, Qt.AlignmentFlag.AlignBottom)
+            continue
+        row.addWidget(cell)
+    return head
+
+
+# 막대 색. 상태를 색만으로 구분하지 않도록 막대 안에 기호를 함께 찍는다.
+_BAR = {
+    status.CONFIRMED: (theme.CYCLE_STRONG, theme.TEXT_ON_PRIMARY),
+    status.INFERRED: (theme.CYCLE_SOFT, theme.TEXT),
+    status.WEAK: (theme.CYCLE_WEAK, theme.TEXT_MUTED),
+}
+
+
+def _slot(months: list[bool], month: int, current_month: int, state: str) -> QWidget:
+    """격자 한 칸.
+
+    칸(slot)은 줄 높이를 다 쓰고, 그 안의 막대만 낮다. 그래야 이번 달 세로
+    띠는 끊기지 않으면서 가로 막대는 행마다 떨어져 보인다.
+    """
+    slot = QWidget()
+    slot.setFixedWidth(theme.GRID_CELL_W)
+    slot.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+    if month == current_month:
+        slot.setAutoFillBackground(True)
+        slot.setStyleSheet(f"background: {theme.PRIMARY_SOFT};")
+
+    box = QVBoxLayout(slot)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.addWidget(_bar(months, month, state), 0, Qt.AlignmentFlag.AlignVCenter)
+    return slot
+
+
+def _bar(months: list[bool], month: int, state: str) -> QLabel:
+    """막대 한 조각. 연속 구간의 양 끝만 둥글려 하나의 기간으로 보이게 한다."""
+    filled = months[month - 1]
+    bar = QLabel()
+    bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    bar.setFixedHeight(theme.GRID_BAR_H)
+    bar.setFixedWidth(theme.GRID_CELL_W)
+
+    if not filled:
+        bar.setText("·")
+        bar.setStyleSheet(f"color: {theme.TEXT_DISABLED}; background: transparent;")
+        return bar
+
+    fill, ink = _BAR.get(state, _BAR[status.WEAK])
+    starts = month == 1 or not months[month - 2]
+    ends = month == 12 or not months[month]
+    radius = theme.GRID_BAR_H // 2
+    left = radius if starts else 0
+    right = radius if ends else 0
+
+    # 구간의 첫 칸에만 기호를 찍는다. 칸마다 반복하면 막대가 글자밭이 된다.
+    bar.setText(status.symbol(state) if starts else "")
+    bar.setStyleSheet(
+        f"background: {fill}; color: {ink}; font-weight: 700;"
+        f"border-top-left-radius: {left}px; border-bottom-left-radius: {left}px;"
+        f"border-top-right-radius: {right}px; border-bottom-right-radius: {right}px;"
+    )
+    return bar

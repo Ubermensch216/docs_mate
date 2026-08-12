@@ -96,6 +96,18 @@ def muted_label(text: str, small: bool = False, wrap: bool = True) -> QLabel:
     return label
 
 
+def note_label(text: str) -> QLabel:
+    """화면 설명 문구. 목록 항목과 같은 회색 글씨로 흘리면 내용과 섞여 읽힌다.
+
+    옅은 판 위에 얹어 "이건 안내지 자료가 아니다"를 배경으로 먼저 말한다.
+    """
+    label = QLabel(text)
+    label.setObjectName("PageNote")
+    label.setWordWrap(True)
+    label.setMaximumWidth(theme.CONTENT_MAX_W)
+    return label
+
+
 def divider() -> QFrame:
     line = QFrame()
     line.setObjectName("Divider")
@@ -130,14 +142,44 @@ class Badge(QLabel):
 
 
 class Card(QFrame):
-    """카드 컨테이너. 내용은 body 레이아웃에 채운다."""
+    """카드 컨테이너. 내용은 body 레이아웃에 채운다.
 
-    def __init__(self, parent: QWidget | None = None):
+    tone="attention"/"primary"면 왼쪽에 굵은 띠가 붙는다. 뱃지 하나보다
+    멀리서 보이므로, 훑어볼 때 급한 카드가 먼저 눈에 걸린다.
+    """
+
+    def __init__(self, parent: QWidget | None = None, tone: str = ""):
         super().__init__(parent)
-        self.setObjectName("Card")
+        self.setObjectName(f"Card{tone.capitalize()}" if tone else "Card")
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(theme.SP_LG, theme.SP_LG, theme.SP_LG, theme.SP_LG)
         self.body.setSpacing(theme.SP_MD)
+
+
+class SubPanel(QFrame):
+    """카드 안에서 근거를 묶는 옅은 판. 어디까지가 근거인지 경계를 만든다."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("SubPanel")
+        self.body = QVBoxLayout(self)
+        self.body.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
+        self.body.setSpacing(theme.SP_XS)
+
+
+class ListRow(QFrame):
+    """목록 한 줄. 카드보다 가볍지만 테두리로 '한 건'이라는 덩어리를 만든다.
+
+    줄만 늘어놓으면 어디서 한 건이 끝나는지 보이지 않아, 옆에 붙은 뱃지가
+    어느 줄 것인지도 헷갈린다. 내용은 row 레이아웃에 채운다.
+    """
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("ListRow")
+        self.row = QHBoxLayout(self)
+        self.row.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
+        self.row.setSpacing(theme.SP_MD)
 
 
 class EvidenceChip(QPushButton):
