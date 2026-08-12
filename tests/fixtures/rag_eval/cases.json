@@ -1,0 +1,81 @@
+{
+  "note": [
+    "질문 화면 평가셋. app/tools/rag_report.py가 읽는다.",
+    "",
+    "expect 값",
+    "  answer    반드시 답해야 한다. 유보하면 실패.",
+    "  withhold  반드시 유보해야 한다. 답을 만들면 실패 — 지어낸 답이다.",
+    "",
+    "must_cite_any   근거에 이 조각(파일명 일부) 중 하나는 반드시 들어야 한다.",
+    "must_not_cite   근거에 이것이 들어오면 실패. 엉뚱한 업무를 끌어온 경우.",
+    "expect_year     근거 문서의 연도가 이 값이어야 한다(주 근거 기준).",
+    "",
+    "이 파일은 지금 합성 표본 코퍼스에 맞춰져 있다. 실제 기관 자료로",
+    "파일럿할 때 cases를 그 자료에 맞게 다시 쓰고, 이 note는 남긴다."
+  ],
+  "cases": [
+    {
+      "id": "year-scope",
+      "question": "2025년 행정사무감사 때 뭘 제출했어?",
+      "why": "연도와 업무가 모두 명시된 가장 기본적인 질의. 이걸 못하면 나머지는 볼 것도 없다.",
+      "expect": "answer",
+      "must_cite_any": ["2025_행정사무감사_제출자료", "2025_행정사무감사_의원질의답변"],
+      "must_not_cite": ["계약관리", "수질통계", "월간실적보고"],
+      "expect_year": 2025
+    },
+    {
+      "id": "relative-year",
+      "question": "작년 예산 요구자료는 어떤 내용이야?",
+      "why": "'작년'을 연도 조건으로 해석하는가. 실측에서 2022·2023 자료가 섞여 나왔다.",
+      "expect": "answer",
+      "must_cite_any": ["예산관리_예산요구자료"],
+      "must_not_cite": ["행정사무감사", "수질통계"]
+    },
+    {
+      "id": "duplicate-flood",
+      "question": "수질통계는 언제 작성해?",
+      "why": "중복본이 근거 자리를 독점하는가. 실측에서 8건 전부 같은 문서의 사본이었다.",
+      "expect": "answer",
+      "must_cite_any": ["수질통계"],
+      "must_not_cite": [],
+      "min_distinct_docs": 2
+    },
+    {
+      "id": "wrong-task-hallucination",
+      "question": "계약관리 업무는 어떤 순서로 처리해?",
+      "why": "실측에서 월간실적보고 숫자로 표를 지어냈다. 자료에 처리 순서 설명이 없으면 유보해야 한다.",
+      "expect": "withhold",
+      "must_not_cite": ["월간실적보고", "수질통계"]
+    },
+    {
+      "id": "absent-topic",
+      "question": "정수장 소독약품 구매 단가는 얼마야?",
+      "why": "코퍼스에 아예 없는 주제. 유보하지 않으면 지어낸 것이다.",
+      "expect": "withhold",
+      "must_not_cite": []
+    },
+    {
+      "id": "absent-person",
+      "question": "김철수 주무관이 담당한 업무가 뭐야?",
+      "why": "자료에 없는 사람. 사람 이름은 특히 지어내기 쉽다.",
+      "expect": "withhold",
+      "must_not_cite": []
+    },
+    {
+      "id": "task-scope",
+      "question": "의원 질의에는 어떻게 대응했어?",
+      "why": "업무명을 직접 말하지 않고 내용으로 묻는다. 의미 검색이 실제로 작동하는가.",
+      "expect": "answer",
+      "must_cite_any": ["의원질의답변"],
+      "must_not_cite": ["수질통계", "계약관리"]
+    },
+    {
+      "id": "exact-term",
+      "question": "부서별자료요청 문서는 언제 만들어졌어?",
+      "why": "고유명사 정확 일치. 벡터 검색만으로는 약한 유형이라 하이브리드 검색의 시금석이다.",
+      "expect": "answer",
+      "must_cite_any": ["부서별자료요청"],
+      "must_not_cite": []
+    }
+  ]
+}

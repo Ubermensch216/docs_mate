@@ -80,6 +80,47 @@ def section_title(text: str) -> QLabel:
     return label
 
 
+class SectionHeader(QWidget):
+    """구획 머리.
+
+    When·How 같은 개념 이름은 제품의 뼈대이지만, 처음 이 화면을 여는
+    담당자에게는 영어 두 글자일 뿐이다. 그래서 개념 이름은 작은 꼬리표로
+    남기고, 큰 글자는 사용자가 실제로 품는 질문으로 적는다.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        tag: str = "",
+        hint: str = "",
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, theme.SP_SM, 0, 0)
+        column.setSpacing(theme.SP_XS)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(theme.SP_SM)
+        if tag:
+            mark = QLabel(tag)
+            mark.setObjectName("SectionTag")
+            mark.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            row.addWidget(mark)
+        heading = QLabel(title)
+        heading.setObjectName("SectionTitle")
+        row.addWidget(heading)
+        row.addStretch(1)
+        column.addLayout(row)
+
+        if hint:
+            note = QLabel(hint)
+            note.setObjectName("Small")
+            note.setWordWrap(True)
+            column.addWidget(note)
+
+
 def body_label(text: str, wrap: bool = True) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(wrap)

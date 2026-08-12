@@ -21,6 +21,11 @@ BORDER_STRONG = "#CBD2DA"
 CANVAS = "#F1F4F8"
 BAND = "#F6F9FC"             # 표의 줄무늬. 가로줄을 눈으로 따라갈 수 있게 한다.
 
+# 사이드바는 본문보다 한 단계 더 짙게. 길과 내용이 같은 색이면 화면이
+# 한 덩어리로 보이고, 메뉴가 "그냥 왼쪽에 있는 글자"가 된다.
+NAV_BG = "#E7EDF4"
+NAV_HOVER = "#DDE5EF"
+
 TEXT = "#1A1D21"
 TEXT_MUTED = "#6B7280"
 TEXT_DISABLED = "#9CA3AF"
@@ -54,7 +59,7 @@ SP_XS, SP_SM, SP_MD, SP_LG, SP_XL = 4, 8, 12, 16, 24
 RADIUS = 8
 RADIUS_SM = 4
 
-SIDEBAR_W = 200
+SIDEBAR_W = 216           # 메뉴 이름 아래 한 줄 설명이 들어갈 폭
 TOPBAR_H = 48
 ROW_H = 36
 DETAIL_PANEL_W = 360
@@ -114,34 +119,51 @@ def stylesheet(large_text: bool = False) -> str:
         border-radius: 3px;
     }}
 
-    /* ── 사이드바 ── */
+    /* ── 사이드바 ──
+       본문보다 한 단계 짙은 판으로 깔아 "여기는 길, 저기는 내용"을 만든다.
+       고른 메뉴는 흰 카드로 떠오르고 왼쪽에 강조 띠가 선다 — 지금 어디에
+       있는지가 색 하나가 아니라 모양으로 보여야 한다. */
     QWidget#Sidebar {{
-        background: {SURFACE};
-        border-right: 1px solid {BORDER};
+        background: {NAV_BG};
+        border-right: 1px solid {BORDER_STRONG};
     }}
     QPushButton#NavItem {{
         background: transparent;
         border: none;
-        border-radius: {RADIUS_SM}px;
-        padding: {SP_SM}px {SP_MD}px;
+        border-left: 3px solid transparent;
+        border-radius: {RADIUS}px;
+        padding: 0;
         text-align: left;
-        color: {TEXT_MUTED};
-        min-height: 24px;
+        min-height: 44px;
     }}
-    QPushButton#NavItem:hover {{
-        background: {SURFACE_ALT};
-        color: {TEXT};
-    }}
+    QPushButton#NavItem:hover {{ background: {NAV_HOVER}; }}
     QPushButton#NavItem:checked {{
-        background: {PRIMARY_SOFT};
-        color: {PRIMARY};
-        font-weight: 600;
+        background: {BG};
+        border-left: 3px solid {PRIMARY};
     }}
+    QLabel#NavIcon {{ font-size: {section}px; color: {TEXT_MUTED}; }}
+    QLabel#NavTitle {{ color: {TEXT}; font-weight: 600; }}
+    QLabel#NavHint {{ color: {TEXT_MUTED}; font-size: {small}px; }}
+    QPushButton#NavItem:checked QLabel#NavTitle {{ color: {PRIMARY}; font-weight: 700; }}
+    QPushButton#NavItem:checked QLabel#NavIcon {{ color: {PRIMARY}; }}
+    QPushButton#NavItem:disabled QLabel#NavTitle,
+    QPushButton#NavItem:disabled QLabel#NavHint,
+    QPushButton#NavItem:disabled QLabel#NavIcon {{ color: {TEXT_DISABLED}; }}
     QLabel#NavSection {{
         color: {TEXT_DISABLED};
         font-size: {small}px;
+        font-weight: 700;
         padding: {SP_SM}px {SP_MD}px {SP_XS}px {SP_MD}px;
     }}
+
+    /* 원본을 건드리지 않는다는 약속. 흐린 한 줄로 흘리면 읽히지 않는다. */
+    QFrame#NavPromise {{
+        background: {BG};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS_SM}px;
+    }}
+    QLabel#NavPromiseHead {{ color: {CONFIRMED}; font-size: {small}px; font-weight: 700; }}
+    QLabel#NavPromiseText {{ color: {TEXT_MUTED}; font-size: {small}px; }}
 
     /* ── 화면 머리 ──
        제목·설명·탭을 흰 띠에 묶어 본문 바탕(회색)과 갈라 놓는다. 탭이
@@ -192,8 +214,19 @@ def stylesheet(large_text: bool = False) -> str:
     }}
     QLabel#SectionTitle {{
         font-size: {section}px;
-        font-weight: 600;
+        font-weight: 700;
     }}
+    /* When·How 같은 개념 이름은 꼬리표로 남기고 큰 글자는 우리말 질문으로. */
+    QLabel#SectionTag {{
+        background: {PRIMARY_SOFT};
+        color: {PRIMARY};
+        border-radius: {RADIUS_SM}px;
+        padding: 2px {SP_SM}px;
+        font-size: {small}px;
+        font-weight: 700;
+    }}
+    /* 화면이 내놓는 답 한 줄. 근거·부연과 같은 크기로 두면 답이 묻힌다. */
+    QLabel#Answer {{ font-size: {section}px; font-weight: 600; color: {TEXT}; }}
     QLabel#Muted {{ color: {TEXT_MUTED}; }}
     QLabel#Small {{ color: {TEXT_MUTED}; font-size: {small}px; }}
 
@@ -317,6 +350,68 @@ def stylesheet(large_text: bool = False) -> str:
         color: {TEXT};
     }}
     QPushButton#GridName:hover {{ color: {PRIMARY}; text-decoration: underline; }}
+    QLabel#GridName {{ color: {TEXT_MUTED}; font-size: {small}px; font-weight: 600; }}
+
+    /* ── 업무 화면 조각 ── */
+    QPushButton#BackLink {{
+        background: transparent;
+        border: none;
+        padding: 0;
+        color: {TEXT_MUTED};
+        font-weight: 600;
+        text-align: left;
+    }}
+    QPushButton#BackLink:hover {{ color: {PRIMARY}; text-decoration: underline; }}
+    /* 글자로 이미 ▾를 쓰고 있다. Qt가 그리는 화살표까지 나오면 둘이 된다. */
+    QPushButton#MenuButton::menu-indicator {{ image: none; width: 0; }}
+
+    /* 읽는 순서. 번호가 흐리면 순서가 아니라 장식이 된다. */
+    QLabel#RankChip {{
+        background: {PRIMARY};
+        color: {TEXT_ON_PRIMARY};
+        border-radius: {RADIUS_SM}px;
+        font-weight: 700;
+    }}
+    QLabel#StepMark {{
+        color: {PRIMARY};
+        font-weight: 700;
+        font-size: {section}px;
+    }}
+    QLabel#StepWhen {{
+        background: {SURFACE_ALT};
+        color: {TEXT_MUTED};
+        border-radius: {RADIUS_SM}px;
+        padding: 2px {SP_XS}px;
+        font-size: {small}px;
+    }}
+    QLabel#StepLabel {{ font-weight: 600; }}
+    QLabel#StepLabelInferred {{ color: {TEXT_MUTED}; font-style: italic; }}
+    QLabel#YearChip {{
+        background: {SURFACE_ALT};
+        color: {TEXT_MUTED};
+        border-radius: {RADIUS_SM}px;
+        padding: 2px {SP_SM}px;
+        font-size: {small}px;
+        font-weight: 600;
+    }}
+    QLabel#PrimaryMark {{ color: {ATTENTION}; font-weight: 700; }}
+    QLabel#LeftoverHead {{ color: {ATTENTION}; font-weight: 700; }}
+    QLabel#StageDone {{ color: {CONFIRMED}; font-weight: 600; }}
+
+    /* 줄 끝에 붙는 작은 조작. 글자만 두면 눌리는 것인지 알 수 없다. */
+    QPushButton#IconButton {{
+        background: {BG};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS_SM}px;
+        padding: 2px 0;
+        color: {TEXT_MUTED};
+    }}
+    QPushButton#IconButton:hover {{
+        background: {PRIMARY_SOFT};
+        border-color: {PRIMARY};
+        color: {PRIMARY};
+    }}
+    QPushButton#IconButton:disabled {{ color: {BORDER}; border-color: {BORDER}; }}
 
     QFrame#Divider {{ background: {BORDER}; max-height: 1px; border: none; }}
 

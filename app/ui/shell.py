@@ -11,10 +11,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -34,11 +37,14 @@ from .views.documents import DocumentsView
 from .views.onboarding import OnboardingView
 from .views.tasks import TasksView
 
+# 메뉴마다 그 메뉴가 답하는 질문을 함께 적는다. 이름만 있는 메뉴는
+# 처음 쓰는 사람에게 "눌러 봐야 아는 것"이지만, 질문이 붙으면 누르기 전에
+# 안다 — 인수인계 도구에서 첫 5분이 그 차이로 갈린다.
 NAV = [
-    ("tasks", "🗂", "업무"),
-    ("calendar", "📅", "일정"),
-    ("documents", "📄", "문서"),
-    ("ask", "💬", "질문"),
+    ("tasks", "🗂", "업무", "내 업무는 무엇인가"),
+    ("calendar", "📅", "일정", "언제 무엇을 하나"),
+    ("documents", "📄", "문서", "이 파일이 최신본인가"),
+    ("ask", "💬", "질문", "자료에 직접 물어본다"),
 ]
 
 
@@ -52,10 +58,21 @@ class TopBar(QWidget):
         super().__init__(parent)
         self.setObjectName("TopBar")
         self.setFixedHeight(theme.TOPBAR_H)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(theme.SP_LG, 0, theme.SP_LG, 0)
         row.setSpacing(theme.SP_MD)
+
+        logo_path = Path(__file__).parent / "assets" / "logo.png"
+        if logo_path.exists():
+            mark = QLabel()
+            mark.setPixmap(
+                QPixmap(str(logo_path)).scaledToHeight(
+                    theme.TOPBAR_H - 16, Qt.TransformationMode.SmoothTransformation
+                )
+            )
+            row.addWidget(mark)
 
         name = QLabel("눈치코치")
         name.setObjectName("AppName")
@@ -99,6 +116,46 @@ class TopBar(QWidget):
         self.status.setText(text)
 
 
+def _nav_item(icon: str, label: str, question: str, shortcut: str) -> QPushButton:
+    """메뉴 한 칸. 이름 아래에 그 메뉴가 답하는 질문을 함께 적는다.
+
+    글자를 버튼 텍스트 하나로 넣으면 이름과 질문의 크기를 나눌 수 없어
+    둘 다 같은 무게로 읽힌다. 그래서 라벨을 버튼 안에 넣고, 라벨은 마우스를
+    통과시켜 버튼 어디를 눌러도 눌리게 한다.
+    """
+    button = QPushButton()
+    button.setObjectName("NavItem")
+    button.setCheckable(True)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setToolTip(f"{label} — {question}  ({shortcut})")
+
+    row = QHBoxLayout(button)
+    row.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_SM, theme.SP_SM)
+    row.setSpacing(theme.SP_MD)
+
+    mark = QLabel(icon)
+    mark.setObjectName("NavIcon")
+    mark.setFixedWidth(20)
+    mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    row.addWidget(mark)
+
+    text = QVBoxLayout()
+    text.setContentsMargins(0, 0, 0, 0)
+    text.setSpacing(0)
+    title = QLabel(label)
+    title.setObjectName("NavTitle")
+    text.addWidget(title)
+    hint = QLabel(question)
+    hint.setObjectName("NavHint")
+    text.addWidget(hint)
+    row.addLayout(text)
+    row.addStretch(1)
+
+    for child in (mark, title, hint):
+        child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    return button
+
+
 class Sidebar(QWidget):
     navigated = Signal(str)
 
@@ -106,20 +163,24 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.setObjectName("Sidebar")
         self.setFixedWidth(theme.SIDEBAR_W)
+        # QWidget을 상속한 위젯은 이 속성이 없으면 스타일시트의 배경·테두리를
+        # 그리지 않는다. 지금까지 사이드바가 흰 여백처럼 보이던 이유가 여기였다.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         column = QVBoxLayout(self)
         column.setContentsMargins(theme.SP_SM, theme.SP_MD, theme.SP_SM, theme.SP_MD)
         column.setSpacing(theme.SP_XS)
 
+        section = QLabel("어디를 볼까요")
+        section.setObjectName("NavSection")
+        column.addWidget(section)
+
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self._buttons: dict[str, QPushButton] = {}
 
-        for key, icon, label in NAV:
-            button = QPushButton(f"  {icon}   {label}")
-            button.setObjectName("NavItem")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
+        for index, (key, icon, label, question) in enumerate(NAV, start=1):
+            button = _nav_item(icon, label, question, f"Ctrl+{index}")
             button.clicked.connect(lambda _=False, k=key: self.navigated.emit(k))
             self.group.addButton(button)
             column.addWidget(button)
@@ -127,11 +188,21 @@ class Sidebar(QWidget):
 
         column.addStretch(1)
 
+        # 이 도구가 지키는 약속. 사이드바 바닥의 흐린 한 줄로 흘리면
+        # 읽히지 않는다 — 원본을 건드리지 않는다는 것이 채택의 조건이다.
+        promise = QFrame()
+        promise.setObjectName("NavPromise")
+        promise_box = QVBoxLayout(promise)
+        promise_box.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
+        promise_box.setSpacing(2)
+        head = QLabel("🔒 읽기 전용")
+        head.setObjectName("NavPromiseHead")
+        promise_box.addWidget(head)
         hint = QLabel("원본은 수정하지 않습니다")
-        hint.setObjectName("Small")
+        hint.setObjectName("NavPromiseText")
         hint.setWordWrap(True)
-        hint.setContentsMargins(theme.SP_MD, 0, theme.SP_MD, 0)
-        column.addWidget(hint)
+        promise_box.addWidget(hint)
+        column.addWidget(promise)
 
     def select(self, key: str) -> None:
         button = self._buttons.get(key)
@@ -224,7 +295,7 @@ class MainWindow(QMainWindow):
             view.refresh()
 
     def _install_shortcuts(self) -> None:
-        for index, (key, _icon, _label) in enumerate(NAV, start=1):
+        for index, (key, _icon, _label, _question) in enumerate(NAV, start=1):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{index}"), self)
             shortcut.activated.connect(lambda k=key: self.go(k))
 
@@ -275,7 +346,14 @@ class MainWindow(QMainWindow):
         needs_discovery = counts["embedded"] > 0 and counts["in_task"] == 0
         needs_cycles = counts["tasks"] > 0 and self.db.get_meta("cycles_checked") is None
         needs_steps = counts["tasks"] > 0 and self.db.get_meta("steps_checked") is None
-        needs_chunks = counts["documents"] > 0 and self.db.get_meta("chunks_checked") is None
+        # 질문 준비는 플래그가 아니라 실제 상태로 판단한다. 플래그만 보면
+        # 한 번 세운 뒤에는 임베딩이 빠진 조각을 영영 다시 시도하지 않는다.
+        # 위 pending 질의가 이미 쓰는 방식이고, 이쪽만 달랐다.
+        needs_chunks = (
+            counts["documents"] > 0
+            and (self.db.get_meta("chunks_checked") is None
+                 or self.db.unembedded_chunk_count() > 0)
+        )
         if pending or needs_discovery or needs_cycles or needs_steps or needs_chunks:
             self._start_pipeline()
 

@@ -12,11 +12,14 @@ import argparse
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from .db import default_project_dir, open_project
 from .ui import theme
 from .ui.shell import MainWindow
+
+_LOGO_PATH = Path(__file__).parent / "ui" / "assets" / "logo.png"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("눈치코치")
     app.setOrganizationName("NunchiCoach")
+    if _LOGO_PATH.exists():
+        app.setWindowIcon(QIcon(str(_LOGO_PATH)))
 
     db = open_project(args.project, Path(args.data) if args.data else None)
     db.audit("app.start", detail=f"project={args.project}")

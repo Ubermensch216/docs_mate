@@ -513,45 +513,59 @@ class Pipeline(QObject):
             )
             return
 
-        rows = db.con.execute(
-            "SELECT d.id, d.filename FROM documents d "
-            "WHERE d.missing_since IS NULL AND d.parse_status IN ('ok', 'partial') "
-            "  AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.id)"
-        ).fetchall()
+        # 조각이 없는 문서뿐 아니라 '조각은 있는데 임베딩이 빠진' 문서도
+        # 집어낸다. 임베딩이 배치 중간에 실패하면 조각만 남는데, 그 문서를
+        # 다음 실행에서 건너뛰면 질문 화면에서 영영 사라진다.
+        rows = db.documents_needing_chunks(client.embed_model)
         report = StageReport(STAGE_CHUNKS, total=len(rows))
         made = 0
+        embedded = 0
 
         for index, row in enumerate(rows, start=1):
             if self._stop:
                 break
-            sections = db.con.execute(
-                "SELECT locator, text FROM document_sections WHERE doc_id = ? ORDER BY ordinal",
-                (row["id"],),
-            ).fetchall()
-            pieces = build_chunks([(s["locator"], s["text"]) for s in sections])
-            if not pieces:
-                report.done = index
-                continue
 
-            chunk_pairs = db.replace_document_chunks(row["id"], pieces)
-            made += len(chunk_pairs)
+            # 조각이 이미 있으면 다시 만들지 않는다. 다시 만들면 chunk_id가
+            # 바뀌어 멀쩡히 있던 임베딩까지 CASCADE로 함께 지워진다.
+            has_chunks = db.con.execute(
+                "SELECT 1 FROM chunks WHERE doc_id = ? LIMIT 1", (row["id"],)
+            ).fetchone()
+            if not has_chunks:
+                sections = db.con.execute(
+                    "SELECT locator, text FROM document_sections WHERE doc_id = ? ORDER BY ordinal",
+                    (row["id"],),
+                ).fetchall()
+                pieces = build_chunks([(s["locator"], s["text"]) for s in sections])
+                if not pieces:
+                    report.done = index
+                    continue
+                made += len(db.replace_document_chunks(row["id"], pieces))
 
-            for start in range(0, len(chunk_pairs), CHUNK_EMBED_BATCH):
+            pending = db.chunks_needing_embedding(row["id"], client.embed_model)
+            for start in range(0, len(pending), CHUNK_EMBED_BATCH):
                 if self._stop:
                     break
-                batch = chunk_pairs[start : start + CHUNK_EMBED_BATCH]
+                batch = pending[start : start + CHUNK_EMBED_BATCH]
                 vectors, error = client.embed([text for _, text in batch])
                 if error:
                     report.errors.append(f"{row['filename']}: {error}")
                     break
                 for (chunk_id, _text), vector in zip(batch, vectors):
                     db.save_chunk_embedding(chunk_id, client.embed_model, len(vector), pack(vector))
+                    embedded += 1
 
             report.done = index
             if index % 5 == 0 or index == len(rows):
                 self.progress.emit(STAGE_CHUNKS, index, len(rows), row["filename"])
 
-        report.note = f"{made:,}조각 준비" if made else "준비할 자료가 없습니다"
+        left = db.unembedded_chunk_count(client.embed_model)
+        if made or embedded:
+            report.note = f"{embedded:,}조각 준비"
+        else:
+            report.note = "준비할 자료가 없습니다"
+        if left:
+            # 남은 것을 숨기지 않는다. 질문 화면이 못 보는 자료가 있다는 뜻이다.
+            report.note += f" · {left:,}조각 남음"
         if report.errors:
             report.note += " · 일부 실패"
         db.set_meta("chunks_checked", "1")

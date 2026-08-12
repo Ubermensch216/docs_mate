@@ -40,13 +40,65 @@ TASK_COLORS = [
     "#A16207",  # 황토
 ]
 
-MONTH_ON = "▉"
-MONTH_OFF = "·"
+STRIP_CELL_W = 14
+STRIP_H = 10
 
 
 def color_for(name: str) -> str:
     """업무 이름에서 고정 색을 뽑는다. 같은 이름은 항상 같은 색."""
     return TASK_COLORS[sum(ord(c) for c in name) % len(TASK_COLORS)]
+
+
+class MonthStrip(QWidget):
+    """12개월을 한 줄로 압축해 '언제 하는 일인가'를 즉시 보여준다.
+
+    글자(▉·)로 그리면 글꼴에 따라 칸 너비가 흔들리고 다른 본문 글자와
+    섞여 읽힌다. 칸을 위젯으로 그리면 12칸의 틀이 언제나 같은 자리에
+    있으므로, 채워진 구간이 몇 월인지 눈으로 셀 수 있다. 연속한 달은
+    이어 붙여 하나의 기간으로 보이게 한다 — 일정 화면의 막대와 같은 말이다.
+
+    반복 주기를 모르는 업무는 빈 틀만 그린다. 없는 것을 지어내지 않는다.
+    """
+
+    def __init__(
+        self,
+        months: list[int] | None,
+        accent: str,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setObjectName("MonthStrip")
+        self.months = sorted(set(months or []))
+        active = set(self.months)
+
+        self.setFixedHeight(STRIP_H)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setToolTip(
+            "1월부터 12월까지. 채워진 칸이 이 업무를 하는 달입니다."
+            if active else "반복 주기를 아직 찾지 못했습니다."
+        )
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        radius = STRIP_H // 2
+        for month in range(1, 13):
+            cell = QLabel()
+            cell.setFixedSize(STRIP_CELL_W, STRIP_H)
+            if month not in active:
+                cell.setStyleSheet(f"background: {theme.SURFACE_ALT};")
+            else:
+                left = radius if month - 1 not in active else 0
+                right = radius if month + 1 not in active else 0
+                cell.setStyleSheet(
+                    f"background: {accent};"
+                    f"border-top-left-radius: {left}px;"
+                    f"border-bottom-left-radius: {left}px;"
+                    f"border-top-right-radius: {right}px;"
+                    f"border-bottom-right-radius: {right}px;"
+                )
+            row.addWidget(cell)
+        row.addStretch(1)
 
 
 class TaskCard(QFrame):
@@ -82,14 +134,13 @@ class TaskCard(QFrame):
             f"""
             QFrame#TaskCard {{
                 background: {theme.BG};
-                border: 1px solid {theme.BORDER};
-                border-left: 4px solid {accent};
+                border: 1px solid {theme.BORDER_STRONG};
+                border-left: 5px solid {accent};
                 border-radius: {theme.RADIUS}px;
             }}
             QFrame#TaskCard:hover {{
-                border-color: {theme.BORDER_STRONG};
-                border-left: 4px solid {accent};
-                background: {theme.SURFACE};
+                border-color: {accent};
+                border-left: 5px solid {accent};
             }}
             """
         )
@@ -98,13 +149,13 @@ class TaskCard(QFrame):
         column.setContentsMargins(theme.SP_LG, theme.SP_MD, theme.SP_LG, theme.SP_MD)
         column.setSpacing(theme.SP_SM)
 
-        column.addWidget(_title(name, accent))
+        column.addWidget(_title(name))
         column.addWidget(_meta(span_text))
 
         if description:
             column.addWidget(_description(description))
 
-        column.addWidget(_month_strip(months, accent))
+        column.addWidget(MonthStrip(months, accent))
         column.addWidget(_cycle_line(cycle_text))
         column.addLayout(_footer(confidence, review_state, reading_count))
 
@@ -116,11 +167,17 @@ class TaskCard(QFrame):
 
 # ── 구성 요소 ───────────────────────────────────────────────────────
 
-def _title(name: str, accent: str) -> QLabel:
+def _title(name: str) -> QLabel:
+    """제목은 검정으로 둔다.
+
+    한때 업무 색으로 칠했지만, 카드 여덟 장이 여덟 색 제목으로 늘어서면
+    이름을 읽는 일 자체가 느려진다. 색은 왼쪽 띠와 월 스트립이 맡고,
+    글자는 가장 읽기 쉬운 상태로 남긴다.
+    """
     label = QLabel(name)
     label.setWordWrap(True)
     label.setStyleSheet(
-        f"color: {accent}; font-size: {theme.FS_SECTION}px; font-weight: 600;"
+        f"color: {theme.TEXT}; font-size: {theme.FS_SECTION}px; font-weight: 700;"
     )
     return label
 
@@ -141,26 +198,6 @@ def _description(text: str) -> QLabel:
     # 줄바꿈 라벨도 자기 '한 줄 폭'을 최소 폭으로 주장한다. 그대로 두면
     # 카드가 좁아지지 못해 그리드 열 수 계산이 무너진다.
     label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-    return label
-
-
-def _month_strip(months: list[int] | None, accent: str) -> QLabel:
-    """12개월을 한 줄로 압축해 '언제 하는 일인가'를 즉시 보여준다.
-
-    반복 주기를 모르는 업무는 빈 칸만 그린다 — 없는 것을 지어내지 않는다.
-    """
-    active = set(months or [])
-    cells = "".join(MONTH_ON if m in active else MONTH_OFF for m in range(1, 13))
-    label = QLabel(cells)
-    label.setStyleSheet(
-        f"color: {accent if active else theme.TEXT_DISABLED}; "
-        f"font-size: {theme.FS_SMALL}px; letter-spacing: 2px;"
-    )
-    label.setToolTip(
-        "1월부터 12월까지. 채워진 칸이 이 업무를 하는 달입니다."
-        if active else "반복 주기를 아직 찾지 못했습니다."
-    )
-    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
     return label
 
 

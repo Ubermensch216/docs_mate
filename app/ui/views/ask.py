@@ -107,13 +107,21 @@ class AskView(QWidget):
         ready, message = self._readiness()
         self.input.setEnabled(ready and not self._runner.running)
         self.send.setEnabled(ready and not self._runner.running)
-        self.notice.setVisible(not ready)
+        # 답할 수 있어도 알릴 것이 있으면 띄운다 — 색인에서 빠진 자료가
+        # 있다는 사실은 답변 자체만큼 중요하다.
+        self.notice.setVisible(bool(message))
         self.notice.setMessage(message)
 
         if not self._runner.running:
             self._render_idle_or_empty(ready)
 
     def _readiness(self) -> tuple[bool, str]:
+        """답할 수 있는가, 그리고 **무엇을 아직 못 보는가**.
+
+        준비가 끝났다고만 말하면 사용자는 자료 전체를 근거로 답한다고 믿는다.
+        일부 문서가 색인에서 빠져 있으면 그 사실을 밝혀야 한다 — 답이 틀린
+        것보다 "왜 그 문서 얘기가 없지?"를 모르는 편이 더 위험하다.
+        """
         counts = self.db.counts()
         if counts["total"] == 0:
             return False, "등록된 자료가 없습니다. 먼저 자료원을 추가하세요."
@@ -122,6 +130,20 @@ class AskView(QWidget):
                 "질문에 답할 준비가 끝나지 않았습니다. 근거 없이 답하지 않기 위해 "
                 "자료를 다 읽고 의미 색인을 만들 때까지 기다립니다."
             )
+
+        left = self.db.unembedded_chunk_count()
+        if left:
+            missing = self.db.documents_missing_from_search()
+            done = counts["chunks_embedded"]
+            text = (
+                f"질문 준비 {done:,} / {done + left:,} — 아직 {left:,}조각을 읽는 중입니다. "
+                f"지금 답할 수는 있지만 일부 자료는 근거에 포함되지 않습니다."
+            )
+            if missing:
+                names = ", ".join(m["filename"] for m in missing[:3])
+                more = f" 외 {len(missing) - 3}건" if len(missing) > 3 else ""
+                text += f"\n아직 검색되지 않는 문서: {names}{more}"
+            return True, text
         return True, ""
 
     def _render_idle_or_empty(self, ready: bool) -> None:

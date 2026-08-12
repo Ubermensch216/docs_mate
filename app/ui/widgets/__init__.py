@@ -10,6 +10,7 @@ from .common import (
     EmptyState,
     EvidenceChip,
     ListRow,
+    SectionHeader,
     SubPanel,
     UnknownBlock,
     body_label,
@@ -22,7 +23,7 @@ from .common import (
     view_title,
 )
 from .flow_grid import FlowGrid
-from .task_card import TaskCard, color_for
+from .task_card import MonthStrip, TaskCard, color_for
 from .timeline_grid import TimelineGrid, legend_text
 
 __all__ = [
@@ -32,6 +33,8 @@ __all__ = [
     "EvidenceChip",
     "FlowGrid",
     "ListRow",
+    "MonthStrip",
+    "SectionHeader",
     "SubPanel",
     "TaskCard",
     "TimelineGrid",

@@ -594,6 +594,67 @@ class Database:
             out.append((cur.lastrowid, text))
         return out
 
+    def documents_needing_chunks(self, model: str) -> list[sqlite3.Row]:
+        """조각이 아직 없거나, 조각은 있는데 임베딩이 빠진 문서.
+
+        '조각이 없는 문서'만 골라서는 안 된다. 임베딩이 배치 중간에 실패하면
+        조각은 남고 임베딩만 비는데, 그 문서는 다음부터 '조각이 있는 문서'로
+        분류돼 영원히 다시 시도되지 않는다. 실제로 그렇게 최신 행정사무감사
+        문서 하나가 질문 화면에서 통째로 빠져 있었다.
+
+        모델을 함께 보는 이유: 임베딩 모델을 바꾸면 옛 벡터는 검색에서
+        걸러지므로(search/rag.py가 model로 필터한다) 없는 것과 같다.
+        """
+        return self.con.execute(
+            """
+            SELECT d.id, d.filename FROM documents d
+            WHERE d.missing_since IS NULL AND d.parse_status IN ('ok', 'partial')
+              AND (NOT EXISTS (SELECT 1 FROM chunks c WHERE c.doc_id = d.id)
+                   OR EXISTS (SELECT 1 FROM chunks c
+                              LEFT JOIN embeddings e
+                                     ON e.chunk_id = c.id AND e.model = ?
+                              WHERE c.doc_id = d.id AND e.chunk_id IS NULL))
+            ORDER BY d.id
+            """,
+            (model,),
+        ).fetchall()
+
+    def chunks_needing_embedding(self, doc_id: int, model: str) -> list[tuple[int, str]]:
+        rows = self.con.execute(
+            "SELECT c.id, c.text FROM chunks c "
+            "LEFT JOIN embeddings e ON e.chunk_id = c.id AND e.model = ? "
+            "WHERE c.doc_id = ? AND e.chunk_id IS NULL ORDER BY c.ordinal",
+            (model, doc_id),
+        ).fetchall()
+        return [(row["id"], row["text"]) for row in rows]
+
+    def unembedded_chunk_count(self, model: str | None = None) -> int:
+        """질문 화면이 아직 못 보는 조각 수. 0이어야 자료 전체를 근거로 쓴다."""
+        if model:
+            return self.con.execute(
+                "SELECT COUNT(*) AS n FROM chunks c "
+                "LEFT JOIN embeddings e ON e.chunk_id = c.id AND e.model = ? "
+                "WHERE e.chunk_id IS NULL",
+                (model,),
+            ).fetchone()["n"]
+        return self.con.execute(
+            "SELECT COUNT(*) AS n FROM chunks c "
+            "LEFT JOIN embeddings e ON e.chunk_id = c.id WHERE e.chunk_id IS NULL"
+        ).fetchone()["n"]
+
+    def documents_missing_from_search(self, model: str | None = None) -> list[sqlite3.Row]:
+        """조각이 하나도 검색되지 않는 문서. 사용자에게 이름을 보여 줘야 한다."""
+        join = "e.chunk_id = c.id" + (" AND e.model = ?" if model else "")
+        params = (model,) if model else ()
+        return self.con.execute(
+            f"SELECT d.id, d.filename, COUNT(c.id) AS chunks "
+            f"FROM documents d JOIN chunks c ON c.doc_id = d.id "
+            f"LEFT JOIN embeddings e ON {join} "
+            f"WHERE d.missing_since IS NULL "
+            f"GROUP BY d.id HAVING SUM(e.chunk_id IS NOT NULL) = 0",
+            params,
+        ).fetchall()
+
     def save_chunk_embedding(self, chunk_id: int, model: str, dim: int, vector: bytes) -> None:
         self.con.execute(
             "INSERT INTO embeddings(chunk_id, model, dim, vector) VALUES (?, ?, ?, ?) "

@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
 
 from app.core import status  # noqa: E402
 from app.ui import theme  # noqa: E402
-from app.ui.widgets import FlowGrid, TaskCard, color_for  # noqa: E402
+from app.ui.widgets import FlowGrid, MonthStrip, TaskCard, color_for  # noqa: E402
 from app.ui.widgets.flow_grid import MAX_COLUMNS, MIN_CARD_WIDTH  # noqa: E402
 
 
@@ -62,12 +62,11 @@ def test_card_shows_name_span_and_cycle(qapp):
 
 def test_card_month_strip_marks_only_active_months(qapp):
     card = _card(months=[9, 10, 11])
-    strip = next(
-        l.text() for l in card.findChildren(QLabel)
-        if l.text() and set(l.text()) <= {"▉", "·"} and len(l.text()) == 12
-    )
-    assert len(strip) == 12
-    assert [i + 1 for i, ch in enumerate(strip) if ch == "▉"] == [9, 10, 11]
+    strip = card.findChild(MonthStrip)
+    assert strip is not None
+    assert strip.months == [9, 10, 11]
+    # 틀은 언제나 열두 칸이다 — 채워진 칸이 몇 월인지 눈으로 셀 수 있어야 한다.
+    assert len(strip.findChildren(QLabel)) == 12
 
 
 def test_card_without_cycle_shows_empty_strip_and_says_so(qapp):
@@ -75,8 +74,8 @@ def test_card_without_cycle_shows_empty_strip_and_says_so(qapp):
     card = _card(months=None, cycle_text=None)
     texts = [l.text() for l in card.findChildren(QLabel) if l.text()]
     assert any("반복 주기 미확인" in t for t in texts)
-    strip = next(t for t in texts if set(t) <= {"▉", "·"} and len(t) == 12)
-    assert "▉" not in strip
+    strip = card.findChild(MonthStrip)
+    assert strip is not None and strip.months == []
 
 
 def test_card_shows_review_badge_only_when_needed(qapp):
