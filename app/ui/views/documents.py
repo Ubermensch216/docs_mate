@@ -59,6 +59,7 @@ PARSE_LABEL = {
     "unsupported": ("— 미지원 형식", theme.TEXT_MUTED),
     "encrypted": ("🔒 암호", theme.ATTENTION),
     "too_large": ("△ 크기 초과", theme.ATTENTION),
+    "locked": ("🔓 열려 있음", theme.ATTENTION),
     "pending": ("… 대기", theme.TEXT_MUTED),
     "skipped": ("· 대상 아님", theme.TEXT_DISABLED),
 }

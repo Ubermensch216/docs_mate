@@ -17,6 +17,8 @@ from .common import (
     section_title,
     view_title,
 )
+from .flow_grid import FlowGrid
+from .task_card import TaskCard, color_for
 from .timeline_grid import TimelineGrid, legend_text
 
 __all__ = [
@@ -24,10 +26,13 @@ __all__ = [
     "Card",
     "EmptyState",
     "EvidenceChip",
+    "FlowGrid",
+    "TaskCard",
     "TimelineGrid",
     "UnknownBlock",
     "body_label",
     "clear_layout",
+    "color_for",
     "divider",
     "legend_text",
     "muted_label",

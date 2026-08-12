@@ -23,8 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("업무기억관")
-    app.setOrganizationName("WorkMemory")
+    app.setApplicationName("눈치코치")
+    app.setOrganizationName("NunchiCoach")
 
     db = open_project(args.project, Path(args.data) if args.data else None)
     db.audit("app.start", detail=f"project={args.project}")
@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="업무기억관")
+    parser = argparse.ArgumentParser(prog="눈치코치")
     parser.add_argument("--project", default="default", help="프로젝트 이름")
     parser.add_argument(
         "--data",

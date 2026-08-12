@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""업무기억관 오프라인 패키징 spec.
+"""눈치코치 오프라인 패키징 spec.
 
 빌드:
-    python -m PyInstaller WorkMemory.spec
+    python -m PyInstaller NunchiCoach.spec
 
-산출물은 dist/WorkMemory/ (onedir)에 생긴다. 이 폴더 전체를 복사하면
+산출물은 dist/NunchiCoach/ (onedir)에 생긴다. 이 폴더 전체를 복사하면
 그대로 다른 PC에서 실행된다 — Python이나 pip이 설치되어 있지 않아도 된다.
+
+실행 파일 이름을 영문으로 두는 이유
+    한글 파일명은 콘솔 코드페이지나 배포 경로에 따라 깨질 수 있다. 화면에
+    보이는 제품명은 한글("눈치코치")이지만 파일 수준 식별자는 영문으로
+    통일한다 — start.bat에서 겪은 인코딩 문제와 같은 종류를 피한다.
 
 entry.py를 쓰는 이유
     app/main.py는 `python -m app.main`으로 실행되는 것을 전제로 상대
@@ -50,7 +55,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='WorkMemory',
+    name='NunchiCoach',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -69,5 +74,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='WorkMemory',
+    name='NunchiCoach',
 )

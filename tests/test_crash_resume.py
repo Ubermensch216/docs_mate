@@ -113,8 +113,19 @@ def test_force_killed_scan_leaves_a_valid_database_and_resumes(tmp_path: Path, m
     try:
         counts = db.counts()
         assert counts["total"] >= partial_total, "재개 후 문서 수가 줄었습니다 — 데이터 유실"
-        assert counts["parse_failed"] == 0
-        assert counts["parsed"] == counts["documents"], "재개 후에도 못 읽은 문서가 남았습니다"
+
+        # 실패했다면 어떤 파일이 왜 실패했는지 남긴다. 간헐적으로만 재현되는
+        # 문제는 실패 순간의 상태를 못 잡으면 원인을 영영 모른다.
+        failures = db.con.execute(
+            "SELECT filename, parse_status, parse_error, size FROM documents "
+            "WHERE parse_status NOT IN ('ok', 'partial', 'skipped')"
+        ).fetchall()
+        detail = [
+            (r["filename"], r["parse_status"], r["parse_error"], r["size"])
+            for r in failures
+        ]
+        assert counts["parse_failed"] == 0, f"재개 후 읽지 못한 문서: {detail}"
+        assert counts["parsed"] == counts["documents"], f"미완료가 남음: {detail}"
 
         unhashed = db.con.execute(
             "SELECT COUNT(*) AS n FROM documents "

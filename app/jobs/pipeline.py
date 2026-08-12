@@ -12,6 +12,7 @@ jobs 테이블은 재시도 횟수를 세는 데만 쓴다. 실패한 파일을 
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,9 +28,13 @@ from ..ingest import scanner
 from ..search import pack
 from ..ingest.hasher import sha256
 from ..ingest.parsers import parse
-from ..ingest.parsers.base import PARSER_VERSION
+from ..ingest.parsers.base import LOCKED, PARSER_VERSION, ParseResult
 
 MAX_ATTEMPTS = 3
+
+# 잠긴 파일 재시도. 짧게 여러 번 — 잠김은 대개 순간적이다.
+LOCK_RETRIES = 3
+LOCK_RETRY_DELAY = 0.3
 COMMIT_EVERY = 50
 
 STAGE_SCAN = "파일 찾기"
@@ -185,11 +190,12 @@ class Pipeline(QObject):
         ).fetchall()
         report = StageReport(STAGE_PARSE, total=len(rows))
         failures = 0
+        locked = 0
 
         for index, row in enumerate(rows, start=1):
             if self._stop:
                 break
-            result = parse(row["path"])
+            result = _parse_with_retry(row["path"])
 
             db.update_document(
                 row["id"],
@@ -215,6 +221,13 @@ class Pipeline(QObject):
                     result.meta.author or "", result.text,
                 )
                 _clear_job(db, row["id"], "parse")
+            elif result.status == LOCKED:
+                # 잠긴 파일은 실패로 굳히지 않는다. pending으로 되돌려
+                # 다음 실행에서 다시 읽고, 재시도 횟수도 세지 않는다 —
+                # 사용자가 문서를 닫기만 하면 정상 처리되어야 한다.
+                db.update_document(row["id"], parse_status="pending")
+                locked += 1
+                report.errors.append(f"{row['filename']}: 다른 프로그램이 열고 있어 건너뜀")
             else:
                 failures += 1
                 _record_failure(db, row["id"], "parse", result.error or result.status)
@@ -228,6 +241,8 @@ class Pipeline(QObject):
         report.note = f"읽음 {counts['parsed']:,}건"
         if failures:
             report.note += f" · 읽지 못함 {failures:,}건"
+        if locked:
+            report.note += f" · 열려 있어 건너뜀 {locked:,}건"
         report.errors = report.errors[:20]
         self.stage_done.emit(report)
 
@@ -614,6 +629,23 @@ class PipelineRunner(QObject):
         self._thread = None
         self._pipeline = None
         self.finished.emit()
+
+
+def _parse_with_retry(path: str, attempts: int = LOCK_RETRIES) -> "ParseResult":
+    """잠긴 파일은 짧게 몇 번 다시 시도한다.
+
+    파일 잠김은 대개 순간적이다 — 다른 프로세스가 막 닫는 중이거나,
+    강제 종료된 프로세스의 핸들을 OS가 아직 회수하지 않은 경우다. 실제로
+    강제종료 재개 시험에서 이 상황이 재현됐다. 몇 번 기다렸다 다시 열면
+    대부분 풀리고, 끝내 안 풀리면 LOCKED로 남겨 다음 실행에 넘긴다.
+    """
+    result = parse(path)
+    for _ in range(attempts - 1):
+        if result.status != LOCKED:
+            return result
+        time.sleep(LOCK_RETRY_DELAY)
+        result = parse(path)
+    return result
 
 
 def _record_failure(db: Database, doc_id: int, kind: str, error: str) -> None:

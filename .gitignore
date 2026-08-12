@@ -3,7 +3,7 @@
 __pycache__/
 *.pyc
 
-# 오프라인 패키징 산출물 (WorkMemory.spec 으로 재생성 가능)
+# 오프라인 패키징 산출물 (NunchiCoach.spec 으로 재생성 가능)
 build/
 dist/
 

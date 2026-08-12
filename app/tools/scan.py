@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     QCoreApplication.instance() or QCoreApplication([])
 
     if args.fresh:
-        directory = Path(tempfile.mkdtemp(prefix="workmemory-"))
+        directory = Path(tempfile.mkdtemp(prefix="nunchicoach-"))
     else:
         directory = default_project_dir() / args.project
         directory.mkdir(parents=True, exist_ok=True)

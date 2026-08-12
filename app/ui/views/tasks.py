@@ -35,6 +35,8 @@ from ..widgets import (
     Badge,
     Card,
     EmptyState,
+    FlowGrid,
+    TaskCard,
     TimelineGrid,
     UnknownBlock,
     clear_layout,
@@ -42,7 +44,7 @@ from ..widgets import (
     section_title,
     view_title,
 )
-from .cycle_format import cycle_headline, cycle_note, next_occurrence_text
+from .cycle_format import cycle_headline, cycle_note, next_occurrence_text, parse_months
 
 STAGES = [
     ("파일 찾기", "total", None),
@@ -71,6 +73,9 @@ class TasksView(QWidget):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setObjectName("Content")
+        # 카드 그리드는 세로로만 늘어나야 한다. 가로 스크롤을 허용하면
+        # 좁은 창에서 열 수가 줄지 않고 카드가 잘린 채 옆으로 밀린다.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget()
         body.setObjectName("Content")
         body.setAutoFillBackground(True)
@@ -122,51 +127,28 @@ class TasksView(QWidget):
             )
         )
 
+        # 카드 그리드로 한 화면 조망. 창을 넓히면 열이 늘어난다.
+        grid = FlowGrid()
         for row in tasks:
-            self.column.addWidget(self._task_card(row))
+            grid.add_card(self._task_card(row))
+        self.column.addWidget(grid)
 
         self._render_leftovers(counts)
 
     def _task_card(self, row) -> QWidget:
-        card = Card()
-        card.setMaximumWidth(theme.CONTENT_MAX_W)
-        card.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        head = QHBoxLayout()
-        head.setSpacing(theme.SP_SM)
-        head.addWidget(section_title(row["name"]))
-        head.addStretch(1)
-        head.addWidget(muted_label(_span(row), small=True, wrap=False))
-        card.body.addLayout(head)
-
-        if row["description"]:
-            card.body.addWidget(muted_label(row["description"]))
-
         cycle = self.db.task_cycle(row["id"])
-        if cycle:
-            card.body.addWidget(
-                muted_label(f"🔁 {cycle_headline(cycle)} 반복", small=True)
-            )
-
-        foot = QHBoxLayout()
-        foot.setSpacing(theme.SP_MD)
-        note, kind = CONFIDENCE_NOTE.get(row["confidence"], CONFIDENCE_NOTE["low"])
-        foot.addWidget(Badge(note, kind))
-
-        reading = len(self.db.task_reading(row["id"]))
-        if reading:
-            foot.addWidget(
-                muted_label(f"📄 먼저 읽을 문서 {reading}건", small=True, wrap=False)
-            )
-        if row["status"] == "proposed":
-            foot.addWidget(Badge("확인 필요", "attention"))
-        foot.addStretch(1)
-
-        enter = QPushButton("열기  →")
-        enter.setObjectName("Link")
-        enter.clicked.connect(lambda _=False, i=row["id"]: self.open_task(i))
-        foot.addWidget(enter)
-        card.body.addLayout(foot)
+        card = TaskCard(
+            task_id=row["id"],
+            name=row["name"],
+            description=row["description"],
+            span_text=_span(row),
+            months=_active_months(cycle),
+            cycle_text=cycle_headline(cycle) if cycle else None,
+            confidence=row["confidence"],
+            needs_review=row["status"] == "proposed",
+            reading_count=len(self.db.task_reading(row["id"])),
+        )
+        card.opened.connect(self.open_task)
         return card
 
     def _render_leftovers(self, counts: dict) -> None:
@@ -503,6 +485,15 @@ def _stage_line(label: str, done: int, limit: int, total_key: str | None) -> str
     if done == 0:
         return f"○ {label}   대기 중"
     return f"⣾ {label}   {done:,} / {limit:,}"
+
+
+def _active_months(cycle) -> list[int] | None:
+    """카드 월 스트립에 채울 달. 주기를 못 찾았으면 None(빈 칸)."""
+    if cycle is None:
+        return None
+    if cycle["kind"] == "monthly":
+        return list(range(1, 13))
+    return parse_months(cycle["months"]) or None
 
 
 def _span(row) -> str:

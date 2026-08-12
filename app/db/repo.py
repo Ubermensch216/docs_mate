@@ -22,14 +22,27 @@ ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("documents", "meta_modified", "meta_modified TEXT"),
 )
 
-APP_DIR_NAME = "WorkMemory"
+APP_DIR_NAME = "NunchiCoach"
+# 제품 이름을 바꾸기 전에 쓰던 폴더. 이미 만들어 둔 프로젝트가 여기 있으면
+# 새 이름으로 갈아타면서 사용자가 자기 분석 결과를 잃는다. 새로 만들지는
+# 않되, 남아 있으면 그대로 이어 쓴다.
+LEGACY_APP_DIR_NAME = "WorkMemory"
 
 
 def default_project_dir() -> Path:
-    """%LOCALAPPDATA%\\WorkMemory\\projects — 사용자 권한으로 제한된다 (SEC-003)."""
+    """%LOCALAPPDATA%\\NunchiCoach\\projects — 사용자 권한으로 제한된다 (SEC-003).
+
+    옛 이름(WorkMemory) 폴더가 이미 있고 새 폴더는 아직 없다면 옛 폴더를
+    그대로 쓴다. 이름을 바꿨다고 사용자의 기존 프로젝트가 사라지면 안 된다.
+    """
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
     root = Path(base) if base else Path.home() / ".local" / "share"
-    return root / APP_DIR_NAME / "projects"
+
+    current = root / APP_DIR_NAME / "projects"
+    legacy = root / LEGACY_APP_DIR_NAME / "projects"
+    if not current.exists() and legacy.exists():
+        return legacy
+    return current
 
 
 def open_project(name: str = "default", root: Path | None = None) -> "Database":

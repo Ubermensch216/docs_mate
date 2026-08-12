@@ -1,10 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
-title WorkMemory
+title NunchiCoach
 
 echo ============================================
-echo   WorkMemory launcher
+echo   NunchiCoach launcher
 echo ============================================
 echo.
 
@@ -72,7 +72,7 @@ if "!NEED_INSTALL!"=="1" (
     echo.
 )
 
-echo Starting WorkMemory now.
+echo Starting NunchiCoach now.
 echo The window may take a few seconds to appear - please wait.
 echo.
 "%VENV_PY%" -m app.main %*

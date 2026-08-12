@@ -191,16 +191,16 @@ def test_pipeline_completes_when_ollama_is_unavailable(tmp_path: Path, monkeypat
 # ── 실제 Ollama가 있을 때만 (선택) ──────────────────────────────────
 
 def _ollama_ready() -> bool:
-    if os.environ.get("WORKMEMORY_LIVE_AI") != "1":
+    if os.environ.get("NUNCHICOACH_LIVE_AI") != "1":
         return False
     return OllamaClient().health().embedding_ready
 
 
 # 기본 실행에서는 건너뛴다. 실제 모델을 부르면 생성·임베딩 모델이 메모리에서
 # 서로를 밀어내 재적재가 일어나고, 시험 시간이 60초에서 250초로 뛴다.
-#     WORKMEMORY_LIVE_AI=1 python -m pytest tests/test_ai.py
+#     NUNCHICOACH_LIVE_AI=1 python -m pytest tests/test_ai.py
 live = pytest.mark.skipif(
-    not _ollama_ready(), reason="WORKMEMORY_LIVE_AI=1 과 Ollama·bge-m3가 필요합니다"
+    not _ollama_ready(), reason="NUNCHICOACH_LIVE_AI=1 과 Ollama·bge-m3가 필요합니다"
 )
 
 

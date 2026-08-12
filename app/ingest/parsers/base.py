@@ -21,6 +21,19 @@ FAILED = "failed"            # 추출 실패
 UNSUPPORTED = "unsupported"  # 지원하지 않는 형식·버전
 ENCRYPTED = "encrypted"      # 암호 문서 — 해제를 시도하지 않는다 (PAR-006)
 TOO_LARGE = "too_large"      # 크기 상한 초과 (PAR-007)
+LOCKED = "locked"            # 다른 프로그램이 열고 있음 — 일시적 (PRD §19)
+
+
+def is_lock_error(exc: OSError) -> bool:
+    """열 수 없는 이유가 '지금 잠겨 있어서'인지 판별한다.
+
+    문서를 한글·엑셀에서 열어 둔 채 스캔하는 것은 실제 업무에서 흔하다.
+    이걸 영구 실패로 기록하면 파일을 닫은 뒤에도 영영 안 읽힌다. Windows는
+    공유 위반을 EACCES(13)나 EBUSY로 돌려준다.
+    """
+    import errno
+
+    return exc.errno in (errno.EACCES, errno.EBUSY, errno.EPERM)
 
 # 안전 한도 (PAR-007)
 MAX_BYTES = 200 * 1024 * 1024

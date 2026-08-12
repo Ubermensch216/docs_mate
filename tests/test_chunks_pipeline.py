@@ -76,13 +76,13 @@ def test_chunks_stage_is_skipped_without_ollama(db: Database, monkeypatch):
 # ── 실제 Ollama가 있을 때만 (선택) ──────────────────────────────────
 
 def _ollama_ready() -> bool:
-    if os.environ.get("WORKMEMORY_LIVE_AI") != "1":
+    if os.environ.get("NUNCHICOACH_LIVE_AI") != "1":
         return False
     return OllamaClient().health().embedding_ready
 
 
 live = pytest.mark.skipif(
-    not _ollama_ready(), reason="WORKMEMORY_LIVE_AI=1 과 Ollama·bge-m3가 필요합니다"
+    not _ollama_ready(), reason="NUNCHICOACH_LIVE_AI=1 과 Ollama·bge-m3가 필요합니다"
 )
 
 

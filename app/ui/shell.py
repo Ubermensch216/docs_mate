@@ -57,7 +57,7 @@ class TopBar(QWidget):
         row.setContentsMargins(theme.SP_LG, 0, theme.SP_LG, 0)
         row.setSpacing(theme.SP_MD)
 
-        name = QLabel("업무기억관")
+        name = QLabel("눈치코치")
         name.setObjectName("AppName")
         row.addWidget(name)
         row.addStretch(1)
@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
-        self.setWindowTitle("업무기억관 — 업무 인수인계 도구")
+        self.setWindowTitle("눈치코치 — 업무 인수인계 도구")
         self.setMinimumSize(*theme.WINDOW_MIN)
 
         root = QWidget()

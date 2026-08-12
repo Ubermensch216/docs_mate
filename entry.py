@@ -11,7 +11,7 @@
 `selftest` 서브커맨드
     PyInstaller의 정적 분석이 pymupdf·openpyxl·python-docx 같은 라이브러리의
     동적 임포트를 놓치면, 앱은 뜨지만 실제 파싱에서만 조용히 깨질 수 있다.
-    `WorkMemory.exe selftest <폴더>`로 번들된 실행 파일 그대로 파서를
+    `NunchiCoach.exe selftest <폴더>`로 번들된 실행 파일 그대로 파서를
     실제로 돌려 이 위험을 검증한다.
 """
 
