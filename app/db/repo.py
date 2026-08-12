@@ -334,6 +334,7 @@ class Database:
             FROM tasks t
             LEFT JOIN task_docs td ON td.task_id = t.id
             LEFT JOIN documents d ON d.id = td.doc_id AND d.missing_since IS NULL
+            WHERE t.not_a_task = 0 AND t.merged_into IS NULL
             GROUP BY t.id
             ORDER BY COALESCE(MAX(d.eff_year), 0) DESC,
                      COUNT(DISTINCT d.eff_year) DESC,
@@ -371,7 +372,8 @@ class Database:
             "SELECT name FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
         self.con.execute(
-            "UPDATE tasks SET name = ?, status = 'edited', origin = 'user' WHERE id = ?",
+            "UPDATE tasks SET name = ?, status = 'edited', origin = 'user', "
+            "review_state = 'confirmed', reviewed_at = datetime('now') WHERE id = ?",
             (name, task_id),
         )
         self.con.execute(
@@ -381,10 +383,6 @@ class Database:
         )
         self.audit("task.rename", str(task_id), f"{before['name'] if before else ''} → {name}")
         return True
-
-    def approve_task(self, task_id: int) -> None:
-        self.con.execute("UPDATE tasks SET status = 'approved' WHERE id = ?", (task_id,))
-        self.audit("task.approve", str(task_id))
 
     def detach_document(self, task_id: int, doc_id: int) -> None:
         self.con.execute(
@@ -403,9 +401,15 @@ class Database:
     def replace_task_cycles(self, task_id: int, cycles: list[dict]) -> None:
         """이 업무의 AI 제안 주기를 통째로 갈아 끼운다.
 
-        사람이 확정한 주기(decided_by='user')는 지금 이 단계에 UI가 없어
-        발생하지 않지만, 미래를 위해 건드리지 않는다 (NFR-SAF-004).
+        사람이 확정한 주기가 하나라도 있으면 아예 손대지 않는다. AI 제안만
+        지우고 새로 넣으면 사람 것과 AI 것이 나란히 남아, 화면이 어느 쪽을
+        고르느냐에 따라 사용자의 확정이 무시된 것처럼 보인다 (NFR-SAF-004).
         """
+        if self.con.execute(
+            "SELECT 1 FROM task_cycles WHERE task_id = ? AND decided_by = 'user'",
+            (task_id,),
+        ).fetchone():
+            return
         self.con.execute(
             "DELETE FROM task_cycles WHERE task_id = ? AND decided_by = 'ai'",
             (task_id,),
@@ -422,8 +426,10 @@ class Database:
             )
 
     def task_cycle(self, task_id: int) -> sqlite3.Row | None:
+        """사람이 확정한 주기가 있으면 무조건 그것이다. 관찰 연도 수는 그다음."""
         return self.con.execute(
-            "SELECT * FROM task_cycles WHERE task_id = ? ORDER BY years_observed DESC LIMIT 1",
+            "SELECT * FROM task_cycles WHERE task_id = ? "
+            "ORDER BY (decided_by = 'user') DESC, years_observed DESC LIMIT 1",
             (task_id,),
         ).fetchone()
 
@@ -493,8 +499,15 @@ class Database:
     def replace_task_steps(self, task_id: int, year: int, steps: list[dict]) -> None:
         """이 업무·이 연도의 AI 제안 단계를 통째로 갈아 끼운다.
 
-        사람이 고친 단계(decided_by='user')는 건드리지 않는다 (NFR-SAF-004).
+        사람이 이 연도를 한 번이라도 고쳤으면 연도 전체를 건드리지 않는다.
+        순서는 단계 하나가 아니라 줄 전체가 의미이기 때문이다 (NFR-SAF-004).
         """
+        if self.con.execute(
+            "SELECT 1 FROM task_steps WHERE task_id = ? AND year = ? "
+            "AND decided_by = 'user'",
+            (task_id, year),
+        ).fetchone():
+            return
         self.con.execute(
             "DELETE FROM task_steps WHERE task_id = ? AND year = ? AND decided_by = 'ai'",
             (task_id, year),
@@ -569,6 +582,376 @@ class Database:
     def duplicate_groups(self, limit: int = 200) -> list[sqlite3.Row]:
         return self.con.execute(
             "SELECT * FROM duplicate_groups ORDER BY n DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    # ── 교정 (계획서 §11) ───────────────────────────────────────────
+    # 모든 교정은 네 가지를 함께 한다. 하나라도 빠지면 계약 위반이다.
+    #   ① 값을 바꾼다
+    #   ② 이제 사람이 정한 값임을 표시한다 (user / edited / confirmed)
+    #   ③ corrections에 무엇이 무엇으로 바뀌었는지 남긴다
+    #   ④ audit에 식별자만 남긴다 (본문은 절대 남기지 않는다, SEC-005)
+    # ②가 없으면 다음 재분석이 덮어쓰고, ③이 없으면 되돌릴 수 없다.
+
+    def _record(self, target: str, target_id: int | None, field: str,
+                before: Any, after: Any, doc_id: int | None = None,
+                scope: str = "single") -> None:
+        self.con.execute(
+            "INSERT INTO corrections(target, target_id, doc_id, field, "
+            "before_val, after_val, scope) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (target, target_id, doc_id,  field,
+             None if before is None else str(before),
+             None if after is None else str(after), scope),
+        )
+
+    # ── 업무 교정 ───────────────────────────────────────────────────
+    def edit_task_description(self, task_id: int, description: str) -> None:
+        before = self.con.execute(
+            "SELECT description FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        self.con.execute(
+            "UPDATE tasks SET description = ?, status = 'edited', origin = 'user', "
+            "review_state = 'confirmed', reviewed_at = datetime('now') WHERE id = ?",
+            (description, task_id),
+        )
+        self._record("tasks", task_id, "description",
+                     before["description"] if before else None, description)
+        self.audit("task.describe", str(task_id))
+
+    def confirm_task(self, task_id: int) -> None:
+        """'이 업무 확인함'. 4단계 상태와 옛 status를 함께 올린다."""
+        self.con.execute(
+            "UPDATE tasks SET status = 'approved', review_state = 'confirmed', "
+            "reviewed_at = datetime('now') WHERE id = ?",
+            (task_id,),
+        )
+        self._record("tasks", task_id, "review_state", None, "confirmed")
+        self.audit("task.confirm", str(task_id))
+
+    def mark_not_a_task(self, task_id: int, flag: bool = True) -> None:
+        """'업무 아님' 처리. 지우지 않는다.
+
+        지워 버리면 다음 재분석이 같은 묶음을 다시 만들어 사용자에게 또
+        묻는다. 판정을 남겨야 그 질문을 한 번으로 끝낼 수 있다.
+        """
+        self.con.execute(
+            "UPDATE tasks SET not_a_task = ?, review_state = 'confirmed', "
+            "reviewed_at = datetime('now'), origin = 'user' WHERE id = ?",
+            (int(flag), task_id),
+        )
+        self._record("tasks", task_id, "not_a_task", int(not flag), int(flag))
+        self.audit("task.not_a_task" if flag else "task.restore", str(task_id))
+
+    def merge_tasks(self, source_id: int, target_id: int) -> bool:
+        """source를 target에 합친다. source는 지우지 않고 흔적으로 남긴다.
+
+        주기·처리순서는 옮기지 않는다. 두 업무의 격자가 합쳐지면 다시
+        계산해야 맞는 값이 나오는데, 그 계산을 여기서 몰래 하면 사용자가
+        모르는 사이에 근거가 바뀐다. 재분석에 맡기고 표시만 지운다.
+        """
+        if source_id == target_id:
+            return False
+        if self.task(source_id) is None or self.task(target_id) is None:
+            return False
+
+        # 이미 target에 있는 문서는 건너뛴다 (복합 PK 충돌 방지).
+        self.con.execute(
+            "INSERT OR IGNORE INTO task_docs(task_id, doc_id, origin, confidence, evidence) "
+            "SELECT ?, doc_id, 'user', confidence, evidence FROM task_docs WHERE task_id = ?",
+            (target_id, source_id),
+        )
+        self.con.execute("DELETE FROM task_docs WHERE task_id = ?", (source_id,))
+        self.con.execute("DELETE FROM task_reading WHERE task_id = ?", (source_id,))
+        # 합쳐진 묶음의 옛 주기·순서는 더 이상 근거가 없다.
+        self.con.execute("DELETE FROM task_cycles WHERE task_id = ?", (source_id,))
+        self.con.execute("DELETE FROM task_steps WHERE task_id = ?", (source_id,))
+
+        source = self.task(source_id)
+        self.con.execute(
+            "UPDATE tasks SET merged_into = ?, review_state = 'confirmed', "
+            "reviewed_at = datetime('now'), origin = 'user' WHERE id = ?",
+            (target_id, source_id),
+        )
+        self.con.execute(
+            "UPDATE tasks SET status = 'edited', origin = 'user', "
+            "review_state = 'confirmed', reviewed_at = datetime('now') WHERE id = ?",
+            (target_id,),
+        )
+        self._record("tasks", source_id, "merged_into", None, target_id)
+        self.audit("task.merge", f"{source_id}→{target_id}", source["name"])
+        return True
+
+    def split_task(self, task_id: int, doc_ids: Sequence[int], new_name: str) -> int | None:
+        """고른 문서를 떼어 새 업무로 만든다. 새 업무 id를 돌려준다."""
+        new_name = new_name.strip()
+        if not new_name or not doc_ids:
+            return None
+        if self.con.execute(
+            "SELECT id FROM tasks WHERE name = ?", (new_name,)
+        ).fetchone():
+            return None
+
+        cur = self.con.execute(
+            "INSERT INTO tasks(name, origin, status, confidence, review_state, "
+            "reviewed_at) VALUES (?, 'user', 'edited', 'high', 'confirmed', "
+            "datetime('now'))",
+            (new_name,),
+        )
+        new_id = cur.lastrowid
+        marks = ", ".join("?" * len(doc_ids))
+        self.con.execute(
+            f"INSERT OR IGNORE INTO task_docs(task_id, doc_id, origin, confidence) "
+            f"SELECT ?, doc_id, 'user', confidence FROM task_docs "
+            f"WHERE task_id = ? AND doc_id IN ({marks})",
+            (new_id, task_id, *doc_ids),
+        )
+        self.con.execute(
+            f"DELETE FROM task_docs WHERE task_id = ? AND doc_id IN ({marks})",
+            (task_id, *doc_ids),
+        )
+        self.con.execute(
+            f"DELETE FROM task_reading WHERE task_id = ? AND doc_id IN ({marks})",
+            (task_id, *doc_ids),
+        )
+        self._record("tasks", task_id, "split", task_id, new_id)
+        self.audit("task.split", f"{task_id}→{new_id}", f"{len(doc_ids)}건")
+        return new_id
+
+    # ── 문서 배정 교정 ──────────────────────────────────────────────
+    def assign_document(self, task_id: int, doc_id: int) -> None:
+        """문서를 업무에 붙인다. 한 문서가 여러 업무에 속할 수 있다."""
+        self.con.execute(
+            "INSERT OR IGNORE INTO task_docs(task_id, doc_id, origin, confidence) "
+            "VALUES (?, ?, 'user', 'high')",
+            (task_id, doc_id),
+        )
+        self.con.execute(
+            "UPDATE task_docs SET origin = 'user' WHERE task_id = ? AND doc_id = ?",
+            (task_id, doc_id),
+        )
+        self._record("task_docs", task_id, "task", None, task_id, doc_id=doc_id)
+        self.audit("document.assign", f"{task_id}/{doc_id}")
+
+    def move_document(self, from_task: int, to_task: int, doc_id: int) -> None:
+        self.assign_document(to_task, doc_id)
+        self.detach_document(from_task, doc_id)
+        self.audit("document.move", f"{from_task}→{to_task}/{doc_id}")
+
+    def set_primary_document(self, task_id: int, doc_id: int) -> None:
+        """대표 문서는 업무당 하나다."""
+        self.con.execute(
+            "UPDATE task_docs SET is_primary = 0 WHERE task_id = ?", (task_id,)
+        )
+        self.con.execute(
+            "UPDATE task_docs SET is_primary = 1, origin = 'user' "
+            "WHERE task_id = ? AND doc_id = ?",
+            (task_id, doc_id),
+        )
+        self._record("task_docs", task_id, "is_primary", None, 1, doc_id=doc_id)
+        self.audit("document.primary", f"{task_id}/{doc_id}")
+
+    def primary_document(self, task_id: int) -> sqlite3.Row | None:
+        return self.con.execute(
+            "SELECT d.* FROM task_docs td JOIN documents d ON d.id = td.doc_id "
+            "WHERE td.task_id = ? AND td.is_primary = 1 LIMIT 1",
+            (task_id,),
+        ).fetchone()
+
+    def unclassified_documents(self, limit: int = 200) -> list[sqlite3.Row]:
+        """어느 업무에도 속하지 않은 문서. 미분류가 남는 것은 정상이다."""
+        return self.con.execute(
+            "SELECT d.* FROM documents d "
+            "WHERE d.missing_since IS NULL AND d.parse_status IN ('ok','partial') "
+            "  AND NOT EXISTS(SELECT 1 FROM task_docs td WHERE td.doc_id = d.id) "
+            "ORDER BY d.eff_date DESC NULLS LAST, d.filename LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    def document_tasks(self, doc_id: int) -> list[sqlite3.Row]:
+        return self.con.execute(
+            "SELECT t.id, t.name, td.origin, td.is_primary FROM task_docs td "
+            "JOIN tasks t ON t.id = td.task_id "
+            "WHERE td.doc_id = ? AND t.not_a_task = 0 AND t.merged_into IS NULL "
+            "ORDER BY t.name",
+            (doc_id,),
+        ).fetchall()
+
+    # ── 시점 교정 ───────────────────────────────────────────────────
+    def set_document_date(
+        self, doc_id: int, value: str | None, precision: str = "day",
+        kind: str = "user",
+    ) -> None:
+        """사람이 고른 시점. value가 None이면 '날짜 모름'으로 확정한다.
+
+        '모름'을 확정하는 것도 하나의 판단이다. 그래서 eff_date를 비우되
+        date_decided_by는 user로 남긴다 — 그러지 않으면 다음 재분석이
+        빈칸을 보고 다시 추정해 사용자의 판단을 지운다.
+        """
+        before = self.document(doc_id)
+        year = month = None
+        if value:
+            parts = value.split("-")
+            year = int(parts[0])
+            month = int(parts[1]) if len(parts) > 1 and precision != "year" else None
+
+        self.update_document(
+            doc_id,
+            eff_date=value,
+            eff_date_kind=kind if value else None,
+            eff_precision=precision if value else None,
+            eff_year=year,
+            eff_month=month,
+            date_decided_by="user",
+        )
+        self._record("documents", doc_id, "eff_date",
+                     before["eff_date"] if before else None, value, doc_id=doc_id)
+        self.audit("document.date", str(doc_id), value or "모름")
+
+    # ── 주기 교정 (When) ────────────────────────────────────────────
+    def set_task_cycle(
+        self, task_id: int, kind: str, months: str, day_hint: str | None = None,
+    ) -> None:
+        """사람이 확정한 주기. AI 제안을 지우고 그 자리에 놓는다."""
+        before = self.task_cycle(task_id)
+        self.con.execute("DELETE FROM task_cycles WHERE task_id = ?", (task_id,))
+        self.con.execute(
+            "INSERT INTO task_cycles(task_id, kind, months, day_hint, "
+            "years_observed, confidence, decided_by, evidence) "
+            "VALUES (?, ?, ?, ?, ?, 'high', 'user', ?)",
+            (task_id, kind, months, day_hint,
+             before["years_observed"] if before else 0,
+             before["evidence"] if before else None),
+        )
+        self._record("task_cycles", task_id, "months",
+                     before["months"] if before else None, months)
+        self.audit("cycle.set", str(task_id), f"{kind}:{months}")
+
+    def confirm_task_cycle(self, task_id: int) -> bool:
+        """AI가 찾은 주기를 사람이 그대로 인정한다. 값은 그대로, 상태만 올린다."""
+        cycle = self.task_cycle(task_id)
+        if cycle is None:
+            return False
+        self.con.execute(
+            "UPDATE task_cycles SET decided_by = 'user', confidence = 'high' WHERE id = ?",
+            (cycle["id"],),
+        )
+        self._record("task_cycles", task_id, "decided_by", "ai", "user")
+        self.audit("cycle.confirm", str(task_id))
+        return True
+
+    def mark_no_cycle(self, task_id: int) -> None:
+        """'반복 아님'. 빈 주기를 사람 판정으로 남겨 재분석이 되살리지 못하게 한다."""
+        self.con.execute("DELETE FROM task_cycles WHERE task_id = ?", (task_id,))
+        self.con.execute(
+            "INSERT INTO task_cycles(task_id, kind, months, years_observed, "
+            "confidence, decided_by) VALUES (?, 'none', '', 0, 'high', 'user')",
+            (task_id,),
+        )
+        self._record("task_cycles", task_id, "kind", None, "none")
+        self.audit("cycle.none", str(task_id))
+
+    # ── 처리 순서 교정 (How) ────────────────────────────────────────
+    def _claim_steps(self, task_id: int, year: int) -> None:
+        """이 연도의 단계를 통째로 사람 소유로 넘긴다.
+
+        한 단계만 고쳐도 연도 전체를 넘기는 이유: 순서는 단계 하나가 아니라
+        줄 전체가 의미다. 일부만 사람 것으로 두면 재분석이 나머지를 갈아
+        끼워 사용자가 만든 순서가 뒤엉킨다.
+        """
+        self.con.execute(
+            "UPDATE task_steps SET decided_by = 'user' WHERE task_id = ? AND year = ?",
+            (task_id, year),
+        )
+
+    def edit_step_label(self, step_id: int, label: str) -> None:
+        row = self.con.execute(
+            "SELECT task_id, year, label FROM task_steps WHERE id = ?", (step_id,)
+        ).fetchone()
+        if row is None:
+            return
+        self._claim_steps(row["task_id"], row["year"])
+        self.con.execute("UPDATE task_steps SET label = ? WHERE id = ?", (label, step_id))
+        self._record("task_steps", step_id, "label", row["label"], label)
+        self.audit("step.rename", str(step_id))
+
+    def move_step(self, step_id: int, offset: int) -> None:
+        """단계를 위(-1)나 아래(+1)로 옮긴다."""
+        row = self.con.execute(
+            "SELECT task_id, year, ordinal FROM task_steps WHERE id = ?", (step_id,)
+        ).fetchone()
+        if row is None:
+            return
+        neighbour = self.con.execute(
+            "SELECT id, ordinal FROM task_steps WHERE task_id = ? AND year = ? "
+            "AND ordinal = ?",
+            (row["task_id"], row["year"], row["ordinal"] + offset),
+        ).fetchone()
+        if neighbour is None:
+            return
+        self._claim_steps(row["task_id"], row["year"])
+        self.con.execute("UPDATE task_steps SET ordinal = ? WHERE id = ?",
+                         (row["ordinal"], neighbour["id"]))
+        self.con.execute("UPDATE task_steps SET ordinal = ? WHERE id = ?",
+                         (neighbour["ordinal"], step_id))
+        self._record("task_steps", step_id, "ordinal", row["ordinal"],
+                     neighbour["ordinal"])
+        self.audit("step.move", str(step_id), str(offset))
+
+    def delete_step(self, step_id: int) -> None:
+        row = self.con.execute(
+            "SELECT task_id, year, ordinal, label FROM task_steps WHERE id = ?",
+            (step_id,),
+        ).fetchone()
+        if row is None:
+            return
+        self._claim_steps(row["task_id"], row["year"])
+        self.con.execute("DELETE FROM task_steps WHERE id = ?", (step_id,))
+        self.con.execute(
+            "UPDATE task_steps SET ordinal = ordinal - 1 "
+            "WHERE task_id = ? AND year = ? AND ordinal > ?",
+            (row["task_id"], row["year"], row["ordinal"]),
+        )
+        self._record("task_steps", step_id, "deleted", row["label"], None)
+        self.audit("step.delete", str(step_id))
+
+    def add_step(self, task_id: int, year: int, label: str, after_ordinal: int = 0,
+                 doc_id: int | None = None) -> int:
+        """빠진 단계를 사람이 끼워 넣는다.
+
+        근거 문서가 없으면 is_inferred=1로 저장한다 — 화면에서 점선으로
+        그려 "이건 자료가 아니라 사람이 채운 칸"임을 계속 드러낸다.
+        """
+        self._claim_steps(task_id, year)
+        self.con.execute(
+            "UPDATE task_steps SET ordinal = ordinal + 1 "
+            "WHERE task_id = ? AND year = ? AND ordinal > ?",
+            (task_id, year, after_ordinal),
+        )
+        cur = self.con.execute(
+            "INSERT INTO task_steps(task_id, year, ordinal, label, doc_id, "
+            "is_inferred, decided_by) VALUES (?, ?, ?, ?, ?, ?, 'user')",
+            (task_id, year, after_ordinal + 1, label, doc_id, 0 if doc_id else 1),
+        )
+        self._record("task_steps", cur.lastrowid, "added", None, label)
+        self.audit("step.add", f"{task_id}/{year}")
+        return cur.lastrowid
+
+    def set_step_document(self, step_id: int, doc_id: int | None) -> None:
+        row = self.con.execute(
+            "SELECT task_id, year, doc_id FROM task_steps WHERE id = ?", (step_id,)
+        ).fetchone()
+        if row is None:
+            return
+        self._claim_steps(row["task_id"], row["year"])
+        self.con.execute(
+            "UPDATE task_steps SET doc_id = ?, is_inferred = ? WHERE id = ?",
+            (doc_id, 0 if doc_id else 1, step_id),
+        )
+        self._record("task_steps", step_id, "doc_id", row["doc_id"], doc_id)
+        self.audit("step.evidence", str(step_id))
+
+    def corrections(self, limit: int = 100) -> list[sqlite3.Row]:
+        return self.con.execute(
+            "SELECT * FROM corrections ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
 
     # ── 감사 로그 ───────────────────────────────────────────────────

@@ -56,6 +56,12 @@ def test_task_review_state_is_authoritative():
     assert status.of_task(task) == status.CONFIRMED
 
 
+def test_human_trace_in_legacy_columns_still_wins():
+    """review_state를 갱신하지 않는 쓰기 경로가 사용자의 확인을 강등시키면 안 된다."""
+    task = row(review_state="inferred", status="edited", confidence="high", origin="user")
+    assert status.of_task(task) == status.CONFIRMED
+
+
 def test_task_falls_back_to_legacy_columns():
     """review_state가 아직 없는 행(마이그레이션 전 코드 경로)도 판정된다."""
     assert status.of_task(row(status="proposed", confidence="high", origin="ai")) == status.INFERRED

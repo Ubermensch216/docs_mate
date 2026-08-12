@@ -108,17 +108,24 @@ def _get(row: Any, key: str) -> Any:
 
 
 def of_task(row: Any) -> str:
-    """업무 하나의 상태. review_state(v2)가 있으면 그것이 최종 권위다."""
+    """업무 하나의 상태.
+
+    review_state(v2)가 기본 권위지만, 사람 흔적이 옛 열에만 남은 경우에도
+    CONFIRMED로 올린다. review_state를 갱신하지 않는 쓰기 경로가 하나라도
+    있으면 사용자의 확인이 조용히 강등되기 때문이다 — 실제로 rename_task가
+    그랬다. 어느 쪽이든 사람이 만졌으면 확정이다.
+    """
     if row is None:
         return UNKNOWN
-    explicit = _get(row, "review_state")
-    if explicit in _LABELS:
-        return explicit
-    return resolve(
+    legacy = resolve(
         confidence=_get(row, "confidence"),
         status=_get(row, "status"),
         origin=_get(row, "origin"),
     )
+    explicit = _get(row, "review_state")
+    if explicit not in _LABELS:
+        return legacy
+    return CONFIRMED if CONFIRMED in (explicit, legacy) else explicit
 
 
 def of_cycle(row: Any) -> str:

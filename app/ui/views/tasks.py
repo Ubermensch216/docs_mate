@@ -18,9 +18,15 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -213,10 +219,11 @@ class TasksView(QWidget):
         head.addWidget(back)
         head.addStretch(1)
 
-        rename = QPushButton("업무명 수정")
-        rename.clicked.connect(lambda: self._rename(task_id))
-        head.addWidget(rename)
-        if row["status"] != "approved":
+        edit = QPushButton("수정 ▾")
+        edit.setToolTip("업무명·설명을 고치거나 다른 업무와 합치고 나눕니다")
+        edit.setMenu(self._edit_menu(task_id, edit))
+        head.addWidget(edit)
+        if status.of_task(row) != status.CONFIRMED:
             approve = QPushButton("이 업무 확인함")
             approve.setObjectName("Primary")
             approve.clicked.connect(lambda: self._approve(task_id))
@@ -304,9 +311,17 @@ class TasksView(QWidget):
             )
 
         cycle = self.db.task_cycle(task_id)
+        if cycle and cycle["kind"] == "none":
+            # 사람이 '반복 아님'으로 확정한 업무. 빈칸으로 두면 시스템이
+            # 못 찾은 것인지 사람이 아니라고 한 것인지 구분되지 않는다.
+            self.column.addWidget(Badge(status.label(status.CONFIRMED), "ok"))
+            self.column.addWidget(muted_label("반복하지 않는 업무로 확인했습니다."))
+            self.column.addLayout(self._cycle_actions(task_id, cycle))
+            return
         if cycle:
             headline = QHBoxLayout()
             headline.setSpacing(theme.SP_SM)
+            headline.addWidget(Badge.state(status.of_cycle(cycle)))
             headline.addWidget(muted_label(f"🔁 {cycle_headline(cycle)} 반복"))
             headline.addWidget(muted_label(f"· {cycle_note(cycle)}", small=True))
             headline.addStretch(1)
@@ -331,6 +346,29 @@ class TasksView(QWidget):
                 go.clicked.connect(self.go_calendar.emit)
                 foot.addWidget(go)
                 self.column.addLayout(foot)
+
+        self.column.addLayout(self._cycle_actions(task_id, cycle))
+
+    def _cycle_actions(self, task_id: int, cycle) -> QHBoxLayout:
+        """추정을 사실로 바꾸는 자리. AI 결과 옆에는 항상 교정 수단이 있어야 한다."""
+        row = QHBoxLayout()
+        row.setSpacing(theme.SP_SM)
+        if cycle is not None and status.of_cycle(cycle) != status.CONFIRMED:
+            confirm = QPushButton("이 주기가 맞습니다")
+            confirm.clicked.connect(lambda: self._confirm_cycle(task_id))
+            row.addWidget(confirm)
+
+        edit = QPushButton("주기 수정")
+        edit.clicked.connect(lambda: self._edit_cycle(task_id))
+        row.addWidget(edit)
+
+        if cycle is None or cycle["kind"] != "none":
+            none = QPushButton("반복 아님")
+            none.setObjectName("Link")
+            none.clicked.connect(lambda: self._no_cycle(task_id))
+            row.addWidget(none)
+        row.addStretch(1)
+        return row
 
     def _render_how(self, task_id: int) -> None:
         """How — 같은 격자를 가로로 읽어 처리 순서를 재현한다.
@@ -375,20 +413,65 @@ class TasksView(QWidget):
             self.column.addWidget(
                 UnknownBlock(f"{selected}년에는 처리 순서를 재구성할 자료가 없습니다.")
             )
+            add = QPushButton("＋ 단계 직접 추가")
+            add.setObjectName("Link")
+            add.clicked.connect(lambda: self._add_step(task_id, selected, 0))
+            self.column.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
             return
 
-        for step in steps:
+        if any(s["decided_by"] == "user" for s in steps):
+            self.column.addWidget(
+                muted_label(
+                    f"{status.symbol(status.CONFIRMED)} 이 연도의 순서는 담당자가 "
+                    f"확인했습니다. 다시 분석해도 바뀌지 않습니다.",
+                    small=True,
+                )
+            )
+
+        last = len(steps)
+        for position, step in enumerate(steps, start=1):
             row = QHBoxLayout()
             row.setSpacing(theme.SP_SM)
             row.addWidget(muted_label(_circled(step["ordinal"]), small=True, wrap=False))
-            row.addWidget(muted_label(step["day_hint"], small=True, wrap=False))
-            row.addWidget(muted_label(step["label"], wrap=False))
+            row.addWidget(muted_label(step["day_hint"] or "", small=True, wrap=False))
+
+            name = muted_label(step["label"], wrap=False)
+            if step["is_inferred"]:
+                # 사람이 채운 칸도 근거가 없으면 없다고 계속 드러낸다.
+                name.setToolTip("근거 문서가 없는 단계입니다")
+                name.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-style: italic;")
+            row.addWidget(name)
+
             if step["filename"]:
                 doc_btn = QPushButton(f"📄 {step['filename']}")
                 doc_btn.setObjectName("Link")
                 doc_btn.clicked.connect(lambda _=False, p=step["path"]: self._open(p))
                 row.addWidget(doc_btn)
             row.addStretch(1)
+
+            for text, tip, slot, enabled in (
+                ("▲", "위로", lambda _=False, s=step["id"]: self._move_step(s, -1),
+                 position > 1),
+                ("▼", "아래로", lambda _=False, s=step["id"]: self._move_step(s, 1),
+                 position < last),
+                ("✎", "단계 이름 수정",
+                 lambda _=False, s=step["id"], l=step["label"]: self._rename_step(s, l),
+                 True),
+                ("＋", "이 아래에 단계 추가",
+                 lambda _=False, t=task_id, y=selected, o=step["ordinal"]:
+                     self._add_step(t, y, o), True),
+                ("✕", "이 단계 빼기",
+                 lambda _=False, s=step["id"], l=step["label"]: self._delete_step(s, l),
+                 True),
+            ):
+                button = QPushButton(text)
+                button.setObjectName("Link")
+                button.setToolTip(tip)
+                button.setFixedWidth(24)
+                button.setEnabled(enabled)
+                button.clicked.connect(slot)
+                row.addWidget(button)
+
             self.column.addLayout(row)
 
             # 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다.
@@ -419,21 +502,33 @@ class TasksView(QWidget):
         )
         self.column.addWidget(muted_label(line))
 
+        primary = self.db.primary_document(task_id)
+        primary_id = primary["id"] if primary else None
+
         for row in rows[:30]:
             item = QHBoxLayout()
             item.setSpacing(theme.SP_SM)
+            if row["id"] == primary_id:
+                item.addWidget(muted_label("★", small=True, wrap=False))
             name = QPushButton(row["filename"])
             name.setObjectName("Link")
+            name.setToolTip(
+                f"{row['path']}\n클릭하면 원본을 엽니다"
+                + ("\n이 업무의 대표 문서입니다" if row["id"] == primary_id else "")
+            )
             name.clicked.connect(lambda _=False, p=row["path"]: self._open(p))
             item.addWidget(name)
             item.addStretch(1)
             item.addWidget(muted_label(_when(row), small=True))
-            drop = QPushButton("이 업무 아님")
-            drop.setObjectName("Link")
-            drop.clicked.connect(
-                lambda _=False, t=task_id, d=row["id"]: self._detach(t, d)
+
+            more = QPushButton("⋯")
+            more.setObjectName("Link")
+            more.setFixedWidth(24)
+            more.setToolTip("이 문서를 다른 업무로 옮기거나 대표로 지정합니다")
+            more.setMenu(
+                self._document_menu(task_id, row["id"], row["id"] == primary_id, more)
             )
-            item.addWidget(drop)
+            item.addWidget(more)
             self.column.addLayout(item)
 
         if len(rows) > 30:
@@ -442,6 +537,179 @@ class TasksView(QWidget):
             )
 
     # ── 교정 ────────────────────────────────────────────────────────
+    # AI가 지식을 만들고, 사람이 지식을 확정한다. 여기 있는 조작이 그
+    # '확정' 쪽 절반이다 (계획서 §11). 모든 조작은 db의 교정 함수를 지나며,
+    # 그 함수들이 재분석 보호와 기록을 함께 처리한다.
+    #
+    # 메뉴의 부모는 항상 그 메뉴를 여는 버튼이다. 뷰에 붙이면 두 가지가
+    # 어긋난다. ① 분석 중에는 1.5초마다 다시 그리므로 뷰에 메뉴가 계속
+    # 쌓인다. ② 부모 없이 만든 하위 메뉴는 파이썬 GC가 먼저 수거해 버려서
+    # 눌렀을 때 빈 메뉴가 뜬다. 버튼에 붙이면 화면이 지워질 때 함께 사라진다.
+
+    def _edit_menu(self, task_id: int, owner: QWidget) -> QMenu:
+        menu = QMenu(owner)
+        menu.addAction("업무명 수정", lambda: self._rename(task_id))
+        menu.addAction("업무 설명 수정", lambda: self._edit_description(task_id))
+        menu.addSeparator()
+        merge = menu.addAction("다른 업무와 합치기", lambda: self._merge(task_id))
+        merge.setEnabled(len(self.db.tasks()) > 1)
+        menu.addAction("두 업무로 나누기", lambda: self._split(task_id))
+        menu.addSeparator()
+        menu.addAction("이건 업무가 아닙니다", lambda: self._not_a_task(task_id))
+        return menu
+
+    def _edit_description(self, task_id: int) -> None:
+        row = self.db.task(task_id)
+        text, ok = QInputDialog.getMultiLineText(
+            self, "업무 설명 수정",
+            "이 업무가 무엇인지 한두 문장으로 적어 주세요",
+            row["description"] or "",
+        )
+        if not ok:
+            return
+        self.db.edit_task_description(task_id, text.strip())
+        self.refresh()
+
+    def _merge(self, task_id: int) -> None:
+        others = [t for t in self.db.tasks() if t["id"] != task_id]
+        if not others:
+            return
+        name = self.db.task(task_id)["name"]
+        choice, ok = QInputDialog.getItem(
+            self, "업무 합치기",
+            f"'{name}'을(를) 어느 업무에 합칠까요?\n"
+            f"문서가 모두 그쪽으로 옮겨지고, 이 업무는 목록에서 사라집니다.",
+            [t["name"] for t in others], 0, False,
+        )
+        if not ok:
+            return
+        target = next(t for t in others if t["name"] == choice)
+        if self.db.merge_tasks(task_id, target["id"]):
+            self.open_task(target["id"])
+
+    def _split(self, task_id: int) -> None:
+        docs = self.db.task_documents(task_id)
+        if len(docs) < 2:
+            QMessageBox.information(
+                self, "업무 나누기", "나누려면 문서가 2건 이상이어야 합니다."
+            )
+            return
+        picked, name = SplitDialog.run(self, self.db.task(task_id)["name"], docs)
+        if not picked:
+            return
+        new_id = self.db.split_task(task_id, picked, name)
+        if new_id is None:
+            QMessageBox.information(
+                self, "업무 나누기", f"'{name}' 업무가 이미 있습니다. 다른 이름을 쓰세요."
+            )
+            return
+        self.open_task(new_id)
+
+    def _not_a_task(self, task_id: int) -> None:
+        name = self.db.task(task_id)["name"]
+        answer = QMessageBox.question(
+            self, "업무 아님",
+            f"'{name}'을(를) 업무 목록에서 내릴까요?\n\n"
+            f"문서는 그대로 남고 삭제되지 않습니다. 다시 분석해도 이 판단은 "
+            f"유지되므로 같은 묶음을 또 묻지 않습니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.mark_not_a_task(task_id)
+        self.back()
+
+    # ── 문서 교정 ───────────────────────────────────────────────────
+    def _document_menu(self, task_id: int, doc_id: int, is_primary: bool,
+                       owner: QWidget) -> QMenu:
+        menu = QMenu(owner)
+        if not is_primary:
+            menu.addAction("대표 문서로 지정", lambda: self._set_primary(task_id, doc_id))
+        others = [t for t in self.db.tasks() if t["id"] != task_id]
+        if others:
+            # addMenu(str)이 돌려주는 하위 메뉴는 주인이 없어 GC 대상이 된다.
+            # 부모를 주고 만든 뒤에 붙인다.
+            move = QMenu("다른 업무로 옮기기", menu)
+            menu.addMenu(move)
+            for other in others:
+                move.addAction(
+                    other["name"],
+                    lambda _=False, t=other["id"]: self._move_document(task_id, t, doc_id),
+                )
+        menu.addSeparator()
+        menu.addAction("이 업무 아님", lambda: self._detach(task_id, doc_id))
+        return menu
+
+    def _set_primary(self, task_id: int, doc_id: int) -> None:
+        self.db.set_primary_document(task_id, doc_id)
+        self.refresh()
+
+    def _move_document(self, from_task: int, to_task: int, doc_id: int) -> None:
+        self.db.move_document(from_task, to_task, doc_id)
+        self.refresh()
+
+    # ── When 교정 ───────────────────────────────────────────────────
+    def _confirm_cycle(self, task_id: int) -> None:
+        self.db.confirm_task_cycle(task_id)
+        self.refresh()
+
+    def _edit_cycle(self, task_id: int) -> None:
+        cycle = self.db.task_cycle(task_id)
+        current = cycle["months"] if cycle and cycle["kind"] == "yearly" else ""
+        text, ok = QInputDialog.getText(
+            self, "반복 주기 수정",
+            "이 업무를 하는 달을 쉼표로 적어 주세요.  예: 9,10,11\n"
+            "매달 하는 업무라면 '매월'이라고 적으세요.",
+            text=current,
+        )
+        if not ok:
+            return
+        text = text.strip()
+        if text in ("매월", "매달"):
+            self.db.set_task_cycle(task_id, "monthly", "")
+        else:
+            months = sorted({
+                int(p) for p in text.replace("월", "").split(",")
+                if p.strip().isdigit() and 1 <= int(p) <= 12
+            })
+            if not months:
+                QMessageBox.information(
+                    self, "반복 주기 수정", "1~12 사이의 달을 쉼표로 구분해 적어 주세요."
+                )
+                return
+            self.db.set_task_cycle(task_id, "yearly", ",".join(str(m) for m in months))
+        self.refresh()
+
+    def _no_cycle(self, task_id: int) -> None:
+        self.db.mark_no_cycle(task_id)
+        self.refresh()
+
+    # ── How 교정 ────────────────────────────────────────────────────
+    def _rename_step(self, step_id: int, current: str) -> None:
+        text, ok = QInputDialog.getText(self, "단계 이름 수정", "단계 이름", text=current)
+        if ok and text.strip():
+            self.db.edit_step_label(step_id, text.strip())
+            self.refresh()
+
+    def _move_step(self, step_id: int, offset: int) -> None:
+        self.db.move_step(step_id, offset)
+        self.refresh()
+
+    def _delete_step(self, step_id: int, label: str) -> None:
+        answer = QMessageBox.question(self, "단계 삭제", f"'{label}' 단계를 뺄까요?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.db.delete_step(step_id)
+            self.refresh()
+
+    def _add_step(self, task_id: int, year: int, after_ordinal: int) -> None:
+        text, ok = QInputDialog.getText(
+            self, "단계 추가",
+            "자료에는 없지만 실제로 있었던 단계를 적어 주세요.\n"
+            "근거 문서가 없는 단계는 점선으로 표시됩니다.",
+        )
+        if ok and text.strip():
+            self.db.add_step(task_id, year, text.strip(), after_ordinal)
+            self.refresh()
+
     def _rename(self, task_id: int) -> None:
         row = self.db.task(task_id)
         name, ok = QInputDialog.getText(self, "업무명 수정", "업무 이름", text=row["name"])
@@ -456,7 +724,7 @@ class TasksView(QWidget):
         self.refresh()
 
     def _approve(self, task_id: int) -> None:
-        self.db.approve_task(task_id)
+        self.db.confirm_task(task_id)
         self.refresh()
 
     def _detach(self, task_id: int, doc_id: int) -> None:
@@ -475,6 +743,67 @@ class TasksView(QWidget):
             subprocess.Popen(["open", path])
         else:
             subprocess.Popen(["xdg-open", path])
+
+
+class SplitDialog(QDialog):
+    """업무 나누기 — 떼어 낼 문서를 고르고 새 업무 이름을 짓는다.
+
+    AI가 두 업무를 하나로 묶는 일은 흔하다(같은 부서, 비슷한 어휘). 그때
+    사용자가 할 수 있는 일이 '삭제'뿐이면 자료를 잃는다. 그래서 나누기가
+    교정 UX의 핵심 조작 중 하나다.
+    """
+
+    def __init__(self, parent: QWidget, task_name: str, docs) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("업무 나누기")
+        self.setMinimumWidth(520)
+
+        column = QVBoxLayout(self)
+        column.setSpacing(theme.SP_MD)
+        column.addWidget(
+            muted_label(f"'{task_name}'에서 떼어 낼 문서를 고르세요. "
+                        f"고르지 않은 문서는 그대로 남습니다.")
+        )
+
+        self.list = QListWidget()
+        self.list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        for doc in docs:
+            item = QListWidgetItem(f"{doc['filename']}   ({_when(doc)})")
+            item.setData(Qt.ItemDataRole.UserRole, doc["id"])
+            self.list.addItem(item)
+        column.addWidget(self.list)
+
+        column.addWidget(muted_label("새 업무 이름", small=True))
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("예: 행감 질의대응")
+        column.addWidget(self.name)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        column.addWidget(buttons)
+
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok.setEnabled(False)
+        self.list.itemSelectionChanged.connect(self._revalidate)
+        self.name.textChanged.connect(self._revalidate)
+
+    def _revalidate(self) -> None:
+        self._ok.setEnabled(
+            bool(self.list.selectedItems()) and bool(self.name.text().strip())
+        )
+
+    @classmethod
+    def run(cls, parent: QWidget, task_name: str, docs) -> tuple[list[int], str]:
+        dialog = cls(parent, task_name, docs)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return [], ""
+        picked = [
+            item.data(Qt.ItemDataRole.UserRole) for item in dialog.list.selectedItems()
+        ]
+        return picked, dialog.name.text().strip()
 
 
 def _stage_line(label: str, done: int, limit: int, total_key: str | None) -> str:

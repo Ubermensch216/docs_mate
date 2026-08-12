@@ -255,10 +255,14 @@ class Pipeline(QObject):
         후보도 남긴다. 화면에서 "무엇을 근거로 2024년이라 했는지" 보여줘야
         사용자가 검증하고 고칠 수 있다.
         """
+        # date_decided_by='user' 제외가 핵심이다. 사용자가 "날짜 모름"으로
+        # 확정하면 eff_date가 비는데, 그 빈칸만 보고 다시 추정하면 사용자의
+        # 판단을 조용히 지우게 된다 (NFR-SAF-004).
         rows = db.con.execute(
             "SELECT id, filename, path, fs_mtime, meta_created, meta_modified "
             "FROM documents "
-            "WHERE eff_date IS NULL AND missing_since IS NULL AND parse_status != 'skipped'"
+            "WHERE eff_date IS NULL AND missing_since IS NULL "
+            "  AND parse_status != 'skipped' AND date_decided_by != 'user'"
         ).fetchall()
         report = StageReport(STAGE_DATE, total=len(rows))
         undated = 0
