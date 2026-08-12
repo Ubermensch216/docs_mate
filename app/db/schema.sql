@@ -1,4 +1,4 @@
--- 눈치코치 스키마 v1
+-- 눈치코치 스키마 v2
 --
 -- 설계 원칙
 --  1. 원본 파일 본체는 DB에 넣지 않는다. 경로와 분석 결과만 저장한다.
@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS documents (
     eff_precision  TEXT,                       -- day|month|year
     eff_year       INTEGER,
     eff_month      INTEGER,
+    -- v2: 사람이 고른 시점은 재분석이 덮지 않는다. 후보(document_dates)는
+    -- 그대로 두고 '누가 골랐는가'만 기록한다.
+    date_decided_by TEXT NOT NULL DEFAULT 'ai',   -- ai | user
 
     parse_status   TEXT NOT NULL DEFAULT 'pending',
     parse_error    TEXT,
@@ -173,7 +176,16 @@ CREATE TABLE IF NOT EXISTS tasks (
     origin      TEXT NOT NULL DEFAULT 'ai',   -- ai | user | seeded
     status      TEXT NOT NULL DEFAULT 'proposed',
     confidence  TEXT NOT NULL DEFAULT 'medium',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+
+    -- v2: 확인·교정 (core/status.py의 4단계와 같은 값을 쓴다)
+    review_state TEXT NOT NULL DEFAULT 'inferred',
+    reviewed_at  TEXT,
+    -- 사용자가 "이건 업무가 아니다"라고 판정한 묶음. 지우지 않는 이유는
+    -- 재분석이 같은 묶음을 또 만들어 낼 때 다시 묻지 않기 위해서다.
+    not_a_task   INTEGER NOT NULL DEFAULT 0,
+    -- 합치기의 흔적. 없앤 쪽을 지우지 않고 어디로 갔는지 남긴다.
+    merged_into  INTEGER REFERENCES tasks(id)
 );
 
 CREATE TABLE IF NOT EXISTS task_docs (
@@ -182,6 +194,7 @@ CREATE TABLE IF NOT EXISTS task_docs (
     origin     TEXT NOT NULL DEFAULT 'ai',    -- ai | user
     confidence TEXT NOT NULL DEFAULT 'medium',
     evidence   TEXT,
+    is_primary INTEGER NOT NULL DEFAULT 0,    -- v2: 이 업무의 대표 문서
     PRIMARY KEY (task_id, doc_id)
 );
 CREATE INDEX IF NOT EXISTS idx_task_docs_doc ON task_docs(doc_id);
@@ -282,6 +295,26 @@ CREATE TABLE IF NOT EXISTS corrections (
     after_val  TEXT,
     scope      TEXT NOT NULL DEFAULT 'single',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── 인수인계 진행 (v2, 계획서 §18) ──────────────────────────────────
+-- 분석이 끝난 뒤 "이제 무엇을 확인해야 하는가"에 답하는 재료. 진행도는
+-- 여기서 세지, 별도로 계산하지 않는다.
+CREATE TABLE IF NOT EXISTS handover_checks (
+    id         INTEGER PRIMARY KEY,
+    kind       TEXT NOT NULL,     -- task | reading | cycle | steps
+    target_id  INTEGER,
+    state      TEXT NOT NULL DEFAULT 'pending',  -- pending | done | skipped
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (kind, target_id)
+);
+
+-- 업무기억 건강도 (v2, 계획서 §19). 규칙으로만 계산한다 — LLM을 쓰지 않는다.
+CREATE TABLE IF NOT EXISTS task_health (
+    task_id    INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    score      INTEGER NOT NULL DEFAULT 0,
+    findings   TEXT,              -- JSON: 부족한 항목 목록
+    checked_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS jobs (

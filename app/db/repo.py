@@ -13,7 +13,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "1"
+from .migrations import SCHEMA_VERSION, add_column, upgrade
+
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 # 스키마가 자란 뒤에 열린 옛 DB에 붙일 열들. (표, 열, DDL)
@@ -84,28 +85,40 @@ class Database:
 
     # ── 스키마 ──────────────────────────────────────────────────────
     def init(self) -> None:
+        """스키마를 최신으로 맞춘다. 기존 프로젝트는 승격하고, 새 프로젝트는 만든다.
+
+        순서가 중요하다. 옛 DB에 schema.sql을 먼저 부으면 v2 표만 생기고
+        v2 열은 빠진 어중간한 상태가 된다. 버전을 먼저 읽고 승격한 뒤에
+        신규 설치용 스키마를 붓는다(전부 IF NOT EXISTS라 안전하다).
+        """
+        current = self._stored_version()
+        if current is not None and current != SCHEMA_VERSION:
+            new_version = upgrade(self.con, self.path, current)
+            self.con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            self._add_missing_columns()
+            self.audit("schema.migrate", f"v{current} → v{new_version}")
+            return
+
         self.con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
         self._add_missing_columns()
-        current = self.get_meta("schema_version")
         if current is None:
             self.set_meta("schema_version", SCHEMA_VERSION)
-        elif current != SCHEMA_VERSION:
-            raise RuntimeError(
-                f"스키마 버전 불일치: DB={current}, 앱={SCHEMA_VERSION}"
-            )
+
+    def _stored_version(self) -> str | None:
+        """meta 표가 아직 없을 수 있다 — 그때는 새 프로젝트다."""
+        try:
+            return self.get_meta("schema_version")
+        except sqlite3.OperationalError:
+            return None
 
     def _add_missing_columns(self) -> None:
         """CREATE TABLE IF NOT EXISTS는 이미 있는 표에 새 열을 붙이지 않는다.
 
-        전진 방향의 열 추가만 여기서 처리한다. 열 삭제·형 변경을 포함한
-        본격적인 마이그레이션은 Step 10에서 다룬다.
+        버전을 올리지 않고 붙일 수 있는 열만 여기서 처리한다. 표 추가나
+        데이터 이관이 필요한 변경은 db/migrations.py로 간다.
         """
         for table, column, ddl in ADDED_COLUMNS:
-            existing = {
-                row["name"] for row in self.con.execute(f"PRAGMA table_info({table})")
-            }
-            if column not in existing:
-                self.con.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            add_column(self.con, table, column, ddl)
 
     def get_meta(self, key: str) -> str | None:
         row = self.con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()

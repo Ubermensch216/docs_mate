@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import timeline
+from ...core import status, timeline
 from ...db import Database
 from .. import theme
 from ..widgets import (
@@ -53,11 +53,6 @@ STAGES = [
     ("업무 파악하기", "in_task", "documents"),
 ]
 
-CONFIDENCE_NOTE = {
-    "high": ("● 묶음이 단단합니다", "ok"),
-    "medium": ("◐ 확인이 필요합니다", "neutral"),
-    "low": ("○ 느슨하게 묶였습니다", "attention"),
-}
 
 
 class TasksView(QWidget):
@@ -145,7 +140,7 @@ class TasksView(QWidget):
             months=_active_months(cycle),
             cycle_text=cycle_headline(cycle) if cycle else None,
             confidence=row["confidence"],
-            needs_review=row["status"] == "proposed",
+            review_state=status.of_task(row),
             reading_count=len(self.db.task_reading(row["id"])),
         )
         card.opened.connect(self.open_task)
@@ -232,8 +227,15 @@ class TasksView(QWidget):
         if row["description"]:
             self.column.addWidget(muted_label(row["description"]))
 
-        note, kind = CONFIDENCE_NOTE.get(row["confidence"], CONFIDENCE_NOTE["low"])
-        self.column.addWidget(Badge(note, kind))
+        # 두 축을 함께 보여준다. 왼쪽은 "사람이 확인했는가"(§9의 4단계),
+        # 오른쪽은 "묶음이 얼마나 단단한가"(§7.2). 둘은 다른 질문이다.
+        marks = QHBoxLayout()
+        marks.setSpacing(theme.SP_SM)
+        marks.addWidget(Badge.state(status.of_task(row)))
+        note, kind = status.cluster_note(row["confidence"])
+        marks.addWidget(Badge(note, kind))
+        marks.addStretch(1)
+        self.column.addLayout(marks)
 
         self._render_reading(task_id)
         self._render_when(task_id)

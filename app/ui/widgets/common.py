@@ -15,17 +15,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core import status
 from .. import theme
 
 DETAIL_WIDTH = 520   # 빈 상태 설명문 폭. 한글은 한 줄이 너무 길면 읽기 어렵다.
-
-# 신뢰 수준 — 보정되지 않은 숫자 확률 대신 4단계를 쓴다 (doc/00 §7.1).
-CONFIDENCE_LABELS = {
-    "high": ("● 높음", "BadgeOk"),
-    "medium": ("◐ 보통", "BadgeNeutral"),
-    "low": ("○ 낮음", "BadgeAttention"),
-    "unknown": ("? 판정 불가", "BadgeDanger"),
-}
 
 
 def clear_layout(layout) -> None:
@@ -92,11 +85,20 @@ class Badge(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
 
     @classmethod
-    def confidence(cls, level: str, parent: QWidget | None = None) -> "Badge":
-        text, style = CONFIDENCE_LABELS.get(level, CONFIDENCE_LABELS["unknown"])
-        badge = cls(text, parent=parent)
-        badge.setObjectName(style)
+    def state(cls, state: str, parent: QWidget | None = None) -> "Badge":
+        """4단계 신뢰 상태 뱃지. 문구·기호·색은 core/status.py가 정한다.
+
+        화면이 raw confidence를 직접 해석하지 않게 하는 것이 요점이다 —
+        같은 뜻이 화면마다 다르게 보이는 것을 막는다 (계획서 §9).
+        """
+        badge = cls(status.label(state), parent=parent)
+        badge.setObjectName(status.badge_style(state))
         return badge
+
+    @classmethod
+    def confidence(cls, level: str, parent: QWidget | None = None) -> "Badge":
+        """AI confidence만 가진 옛 호출부용. 내부적으로 4단계로 접는다."""
+        return cls.state(status.from_confidence(level), parent=parent)
 
 
 class Card(QFrame):

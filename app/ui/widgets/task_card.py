@@ -63,7 +63,7 @@ class TaskCard(QFrame):
         months: list[int] | None,
         cycle_text: str | None,
         confidence: str,
-        needs_review: bool,
+        review_state: str,
         reading_count: int,
         parent: QWidget | None = None,
     ):
@@ -106,7 +106,7 @@ class TaskCard(QFrame):
 
         column.addWidget(_month_strip(months, accent))
         column.addWidget(_cycle_line(cycle_text))
-        column.addLayout(_footer(confidence, needs_review, reading_count))
+        column.addLayout(_footer(confidence, review_state, reading_count))
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 — Qt 규약
         if event.button() == Qt.MouseButton.LeftButton:
@@ -172,7 +172,8 @@ def _cycle_line(cycle_text: str | None) -> QLabel:
     return label
 
 
-def _footer(confidence: str, needs_review: bool, reading_count: int) -> QHBoxLayout:
+def _footer(confidence: str, review_state: str, reading_count: int) -> QHBoxLayout:
+    from ...core import status
     from .common import Badge
 
     row = QHBoxLayout()
@@ -180,8 +181,13 @@ def _footer(confidence: str, needs_review: bool, reading_count: int) -> QHBoxLay
 
     note, kind = _CONFIDENCE.get(confidence, _CONFIDENCE["low"])
     row.addWidget(Badge(note, kind))
-    if needs_review:
-        row.addWidget(Badge("확인 필요", "attention"))
+
+    # 확인된 업무는 그렇다고 말해 준다. 인수인계 진행도(§18)에서 세는 것과
+    # 카드에서 보이는 것이 같아야 사용자가 진도를 신뢰한다.
+    if review_state == status.CONFIRMED:
+        row.addWidget(Badge(f"{status.symbol(status.CONFIRMED)} 확인함", "ok"))
+    else:
+        row.addWidget(Badge(f"{status.symbol(review_state)} 확인 필요", "attention"))
     row.addStretch(1)
 
     if reading_count:

@@ -14,6 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLabel, QWidget  # noqa: E402
 
+from app.core import status  # noqa: E402
 from app.ui import theme  # noqa: E402
 from app.ui.widgets import FlowGrid, TaskCard, color_for  # noqa: E402
 from app.ui.widgets.flow_grid import MAX_COLUMNS, MIN_CARD_WIDTH  # noqa: E402
@@ -30,7 +31,7 @@ def _card(**overrides) -> TaskCard:
     base = dict(
         task_id=1, name="행정사무감사", description="의회 요구자료를 취합해 제출합니다.",
         span_text="17건 · 2022~2025", months=[9, 10, 11], cycle_text="매년 9~11월",
-        confidence="high", needs_review=False, reading_count=4,
+        confidence="high", review_state=status.CONFIRMED, reading_count=4,
     )
     base.update(overrides)
     return TaskCard(**base)
@@ -81,12 +82,19 @@ def test_card_without_cycle_shows_empty_strip_and_says_so(qapp):
 def test_card_shows_review_badge_only_when_needed(qapp):
     # 카드를 지역 변수로 붙들어야 한다 — 임시 객체로 두면 findChildren이
     # 도는 사이 파이썬 GC가 카드를 수거해 C++ 쪽 위젯이 먼저 파괴된다.
-    reviewed = _card(needs_review=True)
-    clean = _card(needs_review=False)
+    reviewed = _card(review_state=status.INFERRED)
+    clean = _card(review_state=status.CONFIRMED)
     texts_review = [l.text() for l in reviewed.findChildren(QLabel) if l.text()]
     texts_clean = [l.text() for l in clean.findChildren(QLabel) if l.text()]
     assert any("확인 필요" in t for t in texts_review)
     assert not any("확인 필요" in t for t in texts_clean)
+
+
+def test_confirmed_card_says_it_is_confirmed(qapp):
+    """진행도에서 세는 것과 카드에서 보이는 것이 같아야 한다 (§18)."""
+    card = _card(review_state=status.CONFIRMED)
+    texts = [l.text() for l in card.findChildren(QLabel) if l.text()]
+    assert any("확인함" in t for t in texts)
 
 
 def test_card_clip_long_description_but_keeps_full_text_in_tooltip(qapp):
