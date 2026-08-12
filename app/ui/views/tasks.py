@@ -9,12 +9,7 @@ When(주기)은 Step 7에서, How(처리 순서)는 Step 8에서 이 화면에 �
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from datetime import date
-from pathlib import Path
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -47,6 +42,7 @@ from ..widgets import (
     UnknownBlock,
     clear_layout,
     muted_label,
+    open_original,
     section_title,
     view_title,
 )
@@ -732,17 +728,7 @@ class TasksView(QWidget):
         self.refresh()
 
     def _open(self, path: str) -> None:
-        target = Path(path)
-        if not target.exists():
-            QMessageBox.information(self, "원본 열기", f"원본을 찾을 수 없습니다:\n{path}")
-            return
-        self.db.audit("document.open", path)
-        if sys.platform == "win32":
-            os.startfile(path)  # noqa: S606 — 사용자가 명시적으로 연 원본
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        else:
-            subprocess.Popen(["xdg-open", path])
+        open_original(self, self.db, path)
 
 
 class SplitDialog(QDialog):

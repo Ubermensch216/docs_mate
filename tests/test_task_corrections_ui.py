@@ -63,15 +63,19 @@ def buttons(widget) -> list[str]:
 
 # ── 메뉴가 실제로 살아 있는가 ───────────────────────────────────────
 
-def test_document_submenu_survives_garbage_collection(view: TasksView):
-    """부모 없는 하위 메뉴는 파이썬 GC가 수거해 눌렀을 때 빈 메뉴가 뜬다."""
-    import gc
+def test_document_submenu_is_owned_and_stays_alive(view: TasksView):
+    """부모 없는 하위 메뉴는 함수가 끝나는 순간 파이썬이 수거한다.
 
+    addMenu(str)이 돌려주는 QMenu는 파이썬 쪽이 소유하므로, 지역 변수가
+    사라지면 C++ 객체까지 파괴돼 사용자가 눌렀을 때 빈 메뉴가 뜬다.
+    (명시적 gc.collect()는 쓰지 않는다 — PySide 위젯이 많은 세션에서
+    힙을 망가뜨린다. 참조 카운트만으로도 이 결함은 드러난다.)
+    """
     owner = QPushButton()
     menu = view._document_menu(1, 1, False, owner)
     submenu = next(a.menu() for a in menu.actions() if a.menu() is not None)
 
-    gc.collect()   # 여기서 수거되면 다음 줄이 RuntimeError를 낸다
+    assert submenu.parent() is menu, "하위 메뉴에 주인이 없다"
     assert [a.text() for a in submenu.actions()] == ["예산관리"]
 
 

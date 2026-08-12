@@ -12,11 +12,6 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -37,6 +32,7 @@ from ..widgets import (
     UnknownBlock,
     clear_layout,
     muted_label,
+    open_original,
     section_title,
     view_title,
 )
@@ -214,14 +210,4 @@ class AskView(QWidget):
         button.setText(button.text() + " ✓")
 
     def _open(self, path: str) -> None:
-        target = Path(path)
-        if not target.exists():
-            self.result_layout.addWidget(UnknownBlock(f"원본을 찾을 수 없습니다: {path}"))
-            return
-        self.db.audit("document.open", path)
-        if sys.platform == "win32":
-            os.startfile(path)  # noqa: S606 — 사용자가 명시적으로 연 원본
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        else:
-            subprocess.Popen(["xdg-open", path])
+        open_original(self, self.db, path)

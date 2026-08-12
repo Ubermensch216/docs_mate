@@ -433,10 +433,55 @@ class Database:
             (task_id,),
         ).fetchone()
 
-    def all_cycles(self) -> list[sqlite3.Row]:
+    def task_documents_in_month(
+        self, task_id: int, month: int, limit: int = 3
+    ) -> list[sqlite3.Row]:
+        """이 업무가 그 달에 남긴 문서. 최근 연도부터.
+
+        일정 화면의 핵심 재료다. "9월에 행정사무감사가 있습니다"는 달력도
+        할 수 있는 말이지만, "작년 9월엔 이 공문으로 시작했습니다"는 전임자의
+        자료를 읽은 시스템만 할 수 있다. 날짜를 업무기억으로 바꾸는 지점이다.
+
+        파일 수정일로만 판정된 시점은 뺀다 — 복사만 해도 바뀌므로 When·How가
+        이미 배제하는 기준이고, 여기서만 느슨하게 하면 근거가 헐거워진다.
+        """
         return self.con.execute(
-            "SELECT c.*, t.name AS task_name, t.id AS task_id "
+            """
+            SELECT d.id, d.filename, d.path, d.eff_year, d.eff_month, d.eff_date
+            FROM task_docs td
+            JOIN documents d ON d.id = td.doc_id
+            WHERE td.task_id = ? AND d.eff_month = ? AND d.missing_since IS NULL
+              AND d.eff_year IS NOT NULL AND d.eff_date_kind != 'fs'
+              AND (d.hash IS NULL OR d.id = (
+                    SELECT MIN(x.id) FROM documents x
+                    WHERE x.hash = d.hash AND x.missing_since IS NULL))
+            ORDER BY d.eff_year DESC, d.eff_date
+            LIMIT ?
+            """,
+            (task_id, month, limit),
+        ).fetchall()
+
+    def task_step_for_month(self, task_id: int, month: int) -> sqlite3.Row | None:
+        """그 달에 있었던 처리 단계 중 가장 최근 연도의 것. '뭐부터 했나'에 답한다."""
+        return self.con.execute(
+            "SELECT s.*, d.filename, d.path FROM task_steps s "
+            "LEFT JOIN documents d ON d.id = s.doc_id "
+            "WHERE s.task_id = ? AND s.month = ? "
+            "ORDER BY s.year DESC, s.ordinal LIMIT 1",
+            (task_id, month),
+        ).fetchone()
+
+    def all_cycles(self) -> list[sqlite3.Row]:
+        """일정 화면의 재료. '업무 아님'과 합쳐진 업무는 빠진다.
+
+        kind='none'(사람이 '반복 아님'으로 확정)도 뺀다 — 그것은 일정이
+        아니라 '일정 없음'이라는 판정이라 일정 화면에 올릴 것이 없다.
+        """
+        return self.con.execute(
+            "SELECT c.*, t.name AS task_name, t.id AS task_id, "
+            "       t.review_state AS task_review_state "
             "FROM task_cycles c JOIN tasks t ON t.id = c.task_id "
+            "WHERE t.not_a_task = 0 AND t.merged_into IS NULL AND c.kind != 'none' "
             "ORDER BY c.years_observed DESC"
         ).fetchall()
 

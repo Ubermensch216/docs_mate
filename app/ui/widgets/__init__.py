@@ -14,6 +14,7 @@ from .common import (
     clear_layout,
     divider,
     muted_label,
+    open_original,
     section_title,
     view_title,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "divider",
     "legend_text",
     "muted_label",
+    "open_original",
     "section_title",
     "view_title",
 ]

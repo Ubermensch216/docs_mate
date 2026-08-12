@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -19,6 +23,30 @@ from ...core import status
 from .. import theme
 
 DETAIL_WIDTH = 520   # 빈 상태 설명문 폭. 한글은 한 줄이 너무 길면 읽기 어렵다.
+
+
+def open_original(parent: QWidget, db, path: str) -> None:
+    """원본을 사용자의 기본 프로그램으로 연다. 읽기만 하고 고치지 않는다.
+
+    모든 화면이 같은 방식으로 열어야 한다 — 감사 기록도 한 곳에서 남긴다.
+    원본이 사라졌을 때 조용히 실패하면 사용자는 프로그램이 멈춘 줄 안다.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    if not Path(path).exists():
+        QMessageBox.information(
+            parent, "원본 열기",
+            f"원본을 찾을 수 없습니다:\n{path}\n\n"
+            f"옮겨졌거나 지워졌을 수 있습니다. 분석 기록은 그대로 남아 있습니다.",
+        )
+        return
+    db.audit("document.open", path)
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606 — 사용자가 명시적으로 연 원본
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
 def clear_layout(layout) -> None:

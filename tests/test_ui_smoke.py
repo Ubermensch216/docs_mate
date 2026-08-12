@@ -376,19 +376,26 @@ def test_calendar_shows_recurring_tasks_when_present(make_window, db):
     _seed_cycle(db, task_id, months="8")   # 이번 달(테스트 실행 월과 무관하게 8월로 고정)
     window = make_window(db)
     window.go("calendar")
-    texts = _labels(window.views["calendar"])
-    assert any("연간 전체" in t for t in texts)
+    view = window.views["calendar"]
+    texts = _labels(view) + _buttons(view)   # 업무명은 눌러서 상세로 가는 버튼이다
+    assert any("연간 패턴" in t for t in texts)
     assert any("행정사무감사" in t for t in texts)
 
 
-def test_calendar_upcoming_list_excludes_monthly_cycles(make_window, db):
-    """매월 반복은 '항상 이번 달'이라 다가오는 일정에 넣지 않는다."""
+def test_calendar_puts_monthly_cycles_in_the_now_tab(make_window, db):
+    """매월 반복은 '항상 이번 달'이다 — 다가올 일이 아니라 지금 챙길 일이다."""
+    from app.ui.views import calendar as cal
+
     task_id = _seed_task(db)
     _seed_cycle(db, task_id, kind="monthly", months="", day_hint="5~10일")
     window = make_window(db)
     window.go("calendar")
-    texts = _labels(window.views["calendar"])
-    assert any("예정된 반복 일정이 없습니다" in t for t in texts), texts
+    view = window.views["calendar"]
+
+    now_page = _labels(view.pages[cal.NOW])
+    later_page = _labels(view.pages[cal.LATER])
+    assert any("진행 중" in t for t in now_page), now_page
+    assert any("더 뒤에 예정된 반복 업무가 없습니다" in t for t in later_page), later_page
 
 
 def test_calendar_open_task_signal_navigates_to_task_detail(make_window, db):

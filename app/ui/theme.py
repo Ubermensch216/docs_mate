@@ -125,6 +125,26 @@ def stylesheet(large_text: bool = False) -> str:
         padding: {SP_SM}px {SP_MD}px {SP_XS}px {SP_MD}px;
     }}
 
+    /* ── 화면 안 탭 ──
+       사이드바(메뉴)와 확실히 달라 보여야 한다. 메뉴는 칠한 블록,
+       탭은 밑줄 하나 — 사용자가 "지금 어느 메뉴 안에 있는가"를 잃지 않는다. */
+    QPushButton#Tab {{
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        padding: {SP_SM}px {SP_MD}px;
+        color: {TEXT_MUTED};
+        min-height: 24px;
+    }}
+    QPushButton#Tab:hover {{ color: {TEXT}; }}
+    QPushButton#Tab:checked {{
+        color: {PRIMARY};
+        border-bottom: 2px solid {PRIMARY};
+        font-weight: 600;
+    }}
+    QWidget#TabBar {{ border-bottom: 1px solid {BORDER}; }}
+
     /* ── 공통 ── */
     QLabel#ViewTitle {{
         font-size: {title}px;
