@@ -39,6 +39,7 @@ from ...jobs import SummaryRunner
 from .. import theme
 from ..widgets import (
     EmptyState,
+    InfoDot,
     UnknownBlock,
     clear_layout,
     muted_label,
@@ -51,19 +52,21 @@ COLUMNS = ["파일명", "업무", "시점", "형식", "크기", "상태"]
 # 상태는 색만으로 구분하지 않는다. 기호와 글자를 함께 쓴다 (PRD §18.4).
 # 셀 위젯 대신 아이템으로 그린다 — 위젯 500개는 저사양 PC에서 무겁고,
 # 열 너비가 바뀔 때 위젯 위치가 어긋난다.
+# 색은 값이 아니라 이름으로 담는다 — 테마를 바꾸면 theme의 색이 갈리는데,
+# 값을 import 시점에 복사해 두면 이 표만 옛 색으로 남는다.
 PARSE_LABEL = {
-    "ok": ("● 정상", theme.CONFIRMED),
-    "partial": ("◐ 부분", theme.ATTENTION),
-    "empty": ("○ 빈 문서", theme.TEXT_MUTED),
-    "failed": ("✕ 읽기 실패", theme.DANGER),
-    "unsupported": ("— 미지원 형식", theme.TEXT_MUTED),
-    "encrypted": ("🔒 암호", theme.ATTENTION),
-    "too_large": ("△ 크기 초과", theme.ATTENTION),
-    "locked": ("🔓 열려 있음", theme.ATTENTION),
-    "pending": ("… 대기", theme.TEXT_MUTED),
-    "skipped": ("· 대상 아님", theme.TEXT_DISABLED),
+    "ok": ("● 정상", "CONFIRMED"),
+    "partial": ("◐ 부분", "ATTENTION"),
+    "empty": ("○ 빈 문서", "TEXT_MUTED"),
+    "failed": ("✕ 읽기 실패", "DANGER"),
+    "unsupported": ("— 미지원 형식", "TEXT_MUTED"),
+    "encrypted": ("🔒 암호", "ATTENTION"),
+    "too_large": ("△ 크기 초과", "ATTENTION"),
+    "locked": ("🔓 열려 있음", "ATTENTION"),
+    "pending": ("… 대기", "TEXT_MUTED"),
+    "skipped": ("· 대상 아님", "TEXT_DISABLED"),
 }
-MISSING_LABEL = ("⚠ 원본 없음", theme.DANGER)
+MISSING_LABEL = ("⚠ 원본 없음", "DANGER")
 
 # 시점 판정 근거. 번호는 우선순위다 (doc/00 §8.1).
 KIND_LABEL = {
@@ -101,7 +104,22 @@ class DocumentsView(QWidget):
         outer.setContentsMargins(theme.SP_XL, theme.SP_XL, theme.SP_XL, theme.SP_XL)
         outer.setSpacing(theme.SP_MD)
 
-        outer.addWidget(view_title("문서"))
+        # 다른 화면과 같은 자리에 같은 ⓘ를 둔다. 설명이 어디 있는지 매번
+        # 찾게 하지 않는 것이 도움말의 절반이다.
+        title_row = QHBoxLayout()
+        title_row.setSpacing(theme.SP_SM)
+        title_row.addWidget(view_title("문서"))
+        title_row.addWidget(
+            InfoDot(
+                "찾은 파일을 그대로 보여 줍니다. 줄을 고르면 오른쪽에 그 파일의 "
+                "시점을 무엇으로 판정했는지와 근거가 나옵니다. 원본은 열어서 "
+                "읽기만 하고 고치지 않습니다."
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        title_row.addStretch(1)
+        outer.addLayout(title_row)
         outer.addLayout(self._build_search())
         outer.addLayout(self._build_filters())
 
@@ -292,13 +310,13 @@ class DocumentsView(QWidget):
         self.table.setItem(r, 4, _cell(_human(row["size"] or 0)))
 
         if row["missing_since"]:
-            label, color = MISSING_LABEL
+            label, token = MISSING_LABEL
         else:
-            label, color = PARSE_LABEL.get(
-                row["parse_status"], (row["parse_status"], theme.TEXT_MUTED)
+            label, token = PARSE_LABEL.get(
+                row["parse_status"], (row["parse_status"], "TEXT_MUTED")
             )
         status = _cell(label)
-        status.setForeground(QColor(color))
+        status.setForeground(QColor(theme.color(token)))
         if row["parse_error"]:
             status.setToolTip(row["parse_error"])
         self.table.setItem(r, 5, status)

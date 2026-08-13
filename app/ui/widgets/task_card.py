@@ -86,7 +86,16 @@ class MonthStrip(QWidget):
             cell = QLabel()
             cell.setFixedSize(STRIP_CELL_W, STRIP_H)
             if month not in active:
-                cell.setStyleSheet(f"background: {theme.SURFACE_ALT};")
+                # 빈 칸도 틀의 일부다. 양 끝만 둥글려 12칸이 하나의 띠로 보인다.
+                left = radius if month == 1 else 0
+                right = radius if month == 12 else 0
+                cell.setStyleSheet(
+                    f"background: {theme.SURFACE_ALT};"
+                    f"border-top-left-radius: {left}px;"
+                    f"border-bottom-left-radius: {left}px;"
+                    f"border-top-right-radius: {right}px;"
+                    f"border-bottom-right-radius: {right}px;"
+                )
             else:
                 left = radius if month - 1 not in active else 0
                 right = radius if month + 1 not in active else 0

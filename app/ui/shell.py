@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from ..db import Database
 from ..jobs import PipelineRunner
-from . import theme
+from . import icons, theme
 from .views.ask import AskView
 from .views.calendar import CalendarView
 from .views.documents import DocumentsView
@@ -41,11 +41,23 @@ from .views.tasks import TasksView
 # 처음 쓰는 사람에게 "눌러 봐야 아는 것"이지만, 질문이 붙으면 누르기 전에
 # 안다 — 인수인계 도구에서 첫 5분이 그 차이로 갈린다.
 NAV = [
-    ("tasks", "🗂", "업무", "내 업무는 무엇인가"),
-    ("calendar", "📅", "일정", "언제 무엇을 하나"),
-    ("documents", "📄", "문서", "이 파일이 최신본인가"),
-    ("ask", "💬", "질문", "자료에 직접 물어본다"),
+    ("tasks", "tasks", "업무", "내 업무는 무엇인가"),
+    ("calendar", "calendar", "일정", "언제 무엇을 하나"),
+    ("documents", "documents", "문서", "이 파일이 최신본인가"),
+    ("ask", "ask", "질문", "자료에 직접 물어본다"),
 ]
+
+# 아이콘이 글자와 같은 색으로 움직여야 "선택된 한 덩어리"로 읽힌다.
+# 이모지는 OS가 제 색으로 칠해 버려 이걸 할 수 없다 (icons.py 참고).
+#
+# 색을 여기에 담아 두지 않고 이름만 적는 이유: 테마를 바꾸면 theme의 색이
+# 갈리는데, 값을 import 시점에 복사해 두면 이 표만 옛 색으로 남는다.
+NAV_ICON_TOKENS = {
+    "normal": "TEXT_MUTED",
+    "checked": "PRIMARY",
+    "disabled": "TEXT_DISABLED",
+}
+NAV_ICON_FALLBACK = {"tasks": "▤", "calendar": "▦", "documents": "▧", "ask": "▪"}
 
 
 class TopBar(QWidget):
@@ -116,44 +128,75 @@ class TopBar(QWidget):
         self.status.setText(text)
 
 
-def _nav_item(icon: str, label: str, question: str, shortcut: str) -> QPushButton:
+class NavItem(QPushButton):
     """메뉴 한 칸. 이름 아래에 그 메뉴가 답하는 질문을 함께 적는다.
 
     글자를 버튼 텍스트 하나로 넣으면 이름과 질문의 크기를 나눌 수 없어
     둘 다 같은 무게로 읽힌다. 그래서 라벨을 버튼 안에 넣고, 라벨은 마우스를
     통과시켜 버튼 어디를 눌러도 눌리게 한다.
+
+    이름과 질문은 **다른 층위**다. 이름은 내가 가는 곳, 질문은 그곳이 답하는
+    것 — 둘을 붙여 놓으면 두 줄짜리 한 문장으로 읽혀 위계가 사라진다.
+    글자 크기·무게·색을 벌리고 줄 사이도 벌려 두 층으로 갈라 놓는다.
     """
-    button = QPushButton()
-    button.setObjectName("NavItem")
-    button.setCheckable(True)
-    button.setCursor(Qt.CursorShape.PointingHandCursor)
-    button.setToolTip(f"{label} — {question}  ({shortcut})")
 
-    row = QHBoxLayout(button)
-    row.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_SM, theme.SP_SM)
-    row.setSpacing(theme.SP_MD)
+    def __init__(self, icon: str, label: str, question: str, shortcut: str,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self._icon = icon
+        self.setObjectName("NavItem")
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(f"{label} — {question}  ({shortcut})")
 
-    mark = QLabel(icon)
-    mark.setObjectName("NavIcon")
-    mark.setFixedWidth(20)
-    mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    row.addWidget(mark)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(theme.SP_MD, theme.SP_MD, theme.SP_SM, theme.SP_MD)
+        row.setSpacing(theme.SP_MD)
 
-    text = QVBoxLayout()
-    text.setContentsMargins(0, 0, 0, 0)
-    text.setSpacing(0)
-    title = QLabel(label)
-    title.setObjectName("NavTitle")
-    text.addWidget(title)
-    hint = QLabel(question)
-    hint.setObjectName("NavHint")
-    text.addWidget(hint)
-    row.addLayout(text)
-    row.addStretch(1)
+        self.mark = QLabel()
+        self.mark.setObjectName("NavIcon")
+        self.mark.setFixedSize(22, 22)
+        self.mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignVCenter)
 
-    for child in (mark, title, hint):
-        child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-    return button
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(theme.SP_XS)   # 이름과 질문이 붙으면 한 덩어리로 읽힌다
+        title = QLabel(label)
+        title.setObjectName("NavTitle")
+        text.addWidget(title)
+        hint = QLabel(question)
+        hint.setObjectName("NavHint")
+        text.addWidget(hint)
+        row.addLayout(text)
+        row.addStretch(1)
+
+        for child in (self.mark, title, hint):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        self.toggled.connect(lambda _checked: self._paint_icon())
+        self._paint_icon()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        """비활성으로 바뀔 때도 아이콘이 글자를 따라가야 한다."""
+        super().changeEvent(event)
+        if event.type() == event.Type.EnabledChange:
+            self._paint_icon()
+
+    def _paint_icon(self) -> None:
+        state = (
+            "disabled" if not self.isEnabled()
+            else "checked" if self.isChecked()
+            else "normal"
+        )
+        color = theme.color(NAV_ICON_TOKENS[state])
+        art = icons.pixmap(self._icon, color, 20)
+        if art is None:
+            # QtSvg가 없는 환경. 이모지 대신 무채색 기호로 물러선다.
+            self.mark.setText(NAV_ICON_FALLBACK.get(self._icon, "·"))
+            self.mark.setStyleSheet(f"color: {color};")
+            return
+        self.mark.setPixmap(art)
 
 
 class Sidebar(QWidget):
@@ -169,7 +212,8 @@ class Sidebar(QWidget):
 
         column = QVBoxLayout(self)
         column.setContentsMargins(theme.SP_SM, theme.SP_MD, theme.SP_SM, theme.SP_MD)
-        column.setSpacing(theme.SP_XS)
+        # 칸끼리 붙어 있으면 두 줄짜리 메뉴 넷이 여덟 줄 문단으로 보인다.
+        column.setSpacing(theme.SP_SM)
 
         section = QLabel("어디를 볼까요")
         section.setObjectName("NavSection")
@@ -180,7 +224,7 @@ class Sidebar(QWidget):
         self._buttons: dict[str, QPushButton] = {}
 
         for index, (key, icon, label, question) in enumerate(NAV, start=1):
-            button = _nav_item(icon, label, question, f"Ctrl+{index}")
+            button = NavItem(icon, label, question, f"Ctrl+{index}")
             button.clicked.connect(lambda _=False, k=key: self.navigated.emit(k))
             self.group.addButton(button)
             column.addWidget(button)
@@ -194,15 +238,41 @@ class Sidebar(QWidget):
         promise.setObjectName("NavPromise")
         promise_box = QVBoxLayout(promise)
         promise_box.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
-        promise_box.setSpacing(2)
-        head = QLabel("🔒 읽기 전용")
+        promise_box.setSpacing(theme.SP_XS)
+
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_row.setSpacing(theme.SP_XS)
+        self._lock = QLabel()
+        self._lock.setFixedSize(14, 14)
+        head_row.addWidget(self._lock)
+        head = QLabel("읽기 전용")
         head.setObjectName("NavPromiseHead")
-        promise_box.addWidget(head)
+        head_row.addWidget(head)
+        head_row.addStretch(1)
+        promise_box.addLayout(head_row)
         hint = QLabel("원본은 수정하지 않습니다")
         hint.setObjectName("NavPromiseText")
         hint.setWordWrap(True)
         promise_box.addWidget(hint)
         column.addWidget(promise)
+
+        self.repaint_icons()
+
+    def repaint_icons(self) -> None:
+        """테마가 바뀌면 아이콘도 새 색으로 다시 그려야 한다.
+
+        스타일시트는 글자만 갈아 준다. 아이콘은 그릴 때 색을 넣는 방식이라
+        (icons.py), 다시 그리지 않으면 어두운 바탕에 어두운 선이 남는다.
+        """
+        lock_art = icons.pixmap("lock", theme.CONFIRMED, 14)
+        if lock_art is None:
+            self._lock.setText("▪")
+            self._lock.setStyleSheet(f"color: {theme.CONFIRMED};")
+        else:
+            self._lock.setPixmap(lock_art)
+        for button in self._buttons.values():
+            button._paint_icon()
 
     def select(self, key: str) -> None:
         button = self._buttons.get(key)
@@ -411,7 +481,34 @@ class MainWindow(QMainWindow):
     def _open_settings(self) -> None:
         from .views.settings import SettingsDialog
 
-        SettingsDialog(self.db, self).exec()
+        dialog = SettingsDialog(self.db, self)
+        dialog.sources_changed.connect(self._on_sources_changed)
+        dialog.exec()
+
+    def _on_sources_changed(self) -> None:
+        """자료 폴더를 더하거나 바꾸거나 뺐다 — 화면과 분석을 다시 맞춘다.
+
+        폴더만 바꿔 놓고 분석을 그대로 두면, 사용자는 새 폴더를 지정했는데도
+        옛 목록을 보며 "안 먹혔나" 하게 된다. 파이프라인은 남은 일을 문서
+        상태로 찾으므로 그냥 다시 켜면 새 폴더부터 훑는다(ING-006).
+        """
+        self.refresh()
+        if self.db.sources():
+            self._start_pipeline()
+
+    def restyle(self) -> None:
+        """테마·글자 크기가 바뀐 뒤 창 전체를 새 색으로 다시 그린다.
+
+        스타일시트만으로 끝나지 않는 것이 둘 있다. 아이콘은 그릴 때 색을
+        넣고(icons.py), 일정 격자·업무 카드는 칸마다 색을 직접 칠한다. 둘 다
+        다시 만들어야 하므로 사이드바는 아이콘을, 본문은 화면 전체를 다시
+        조립한다.
+        """
+        self.sidebar.repaint_icons()
+        # 지금 보이는 화면만 다시 짓는다. 나머지는 그 화면으로 갈 때
+        # go()가 어차피 refresh를 부르므로 미리 만들 이유가 없다.
+        self._refresh_current()
+        self.update()
 
     def shutdown(self) -> None:
         """백그라운드 스레드를 안전하게 세운다.

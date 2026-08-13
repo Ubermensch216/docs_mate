@@ -29,6 +29,7 @@ from ..widgets import (
     Card,
     EmptyState,
     EvidenceChip,
+    InfoDot,
     UnknownBlock,
     clear_layout,
     muted_label,
@@ -60,13 +61,19 @@ class AskView(QWidget):
         outer.setSpacing(theme.SP_LG)
         outer.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        outer.addWidget(view_title("자료에 대해 질문하세요"))
-        outer.addWidget(
-            muted_label(
+        title_row = QHBoxLayout()
+        title_row.setSpacing(theme.SP_SM)
+        title_row.addWidget(view_title("자료에 대해 질문하세요"))
+        title_row.addWidget(
+            InfoDot(
                 "등록한 자료만 근거로 답합니다. 자료에 없는 내용은 지어내지 않고, "
                 "근거가 부족하면 답을 보류합니다."
-            )
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
         )
+        title_row.addStretch(1)
+        outer.addLayout(title_row)
 
         row = QHBoxLayout()
         row.setSpacing(theme.SP_SM)

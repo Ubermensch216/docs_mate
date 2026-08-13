@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 from app.db import Database  # noqa: E402
 from app.ui import theme  # noqa: E402
 from app.ui.shell import MainWindow  # noqa: E402
+from app.ui.views import tasks as tasks_view  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -256,6 +257,45 @@ def test_task_detail_shows_reading_list_with_reasons(make_window, db):
     assert any("2025_행정사무감사" in t for t in texts)
 
 
+def test_task_detail_opens_on_the_reading_tab(make_window, db):
+    """상세는 언제나 '무엇부터 읽나'로 열린다. 탭은 넷이고, 목록에는 없다."""
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    assert view.tabs.isVisible() or not view.isVisible()   # 오프스크린 대비
+    assert view._tab == tasks_view.READ
+    assert view.stack.currentWidget() is view.pages[tasks_view.READ]
+
+    view.back()
+    assert view.stack.currentWidget() is view.list_page
+    assert not view.tabs.isVisible()
+
+
+def test_task_detail_keeps_the_open_tab_across_refresh(make_window, db):
+    """분석 중에는 1.5초마다 다시 그린다. 보고 있던 탭을 빼앗으면 안 된다."""
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    view._switch(tasks_view.HOW)
+    view.refresh()
+
+    assert view._tab == tasks_view.HOW
+    assert view.stack.currentWidget() is view.pages[tasks_view.HOW]
+
+
+def test_task_detail_tabs_carry_counts(make_window, db):
+    """탭 이름의 건수는 누르기 전에 규모를 알려 준다."""
+    task_id = _seed_task(db)
+    view = make_window(db).views["tasks"]
+    view.open_task(task_id)
+
+    labels = _buttons(view)
+    docs = len(db.task_documents(task_id))
+    assert any(f"이 업무의 문서  {docs}" in t for t in labels), labels
+
+
 def test_task_detail_can_return_to_the_list(make_window, db):
     task_id = _seed_task(db)
     view = make_window(db).views["tasks"]
@@ -308,6 +348,36 @@ def test_unclassified_documents_are_shown_not_hidden(make_window, db):
     assert any("미분류 1건" in t for t in texts), texts
 
 
+def test_long_guidance_is_folded_into_an_info_dot(make_window, db):
+    """설명은 접되 잃지 않는다 — 본문에서 빠진 문장은 ⓘ의 팝업에 있어야 한다."""
+    from app.ui.widgets import InfoDot
+
+    _seed_task(db)
+    window = make_window(db)
+    window.go("tasks")
+    view = window.views["tasks"]
+
+    # 본문에는 더 이상 안내 문단이 깔리지 않는다.
+    assert not any("카드를 누르면" in t for t in _labels(view))
+
+    dots = view.findChildren(InfoDot)
+    assert dots, "설명을 접었으면 접었다는 표시가 화면에 남아야 한다"
+    popups = " ".join(d.toolTip() for d in dots)
+    assert "카드를 누르면" in popups
+    assert "AI가 제안한 것이므로" in popups
+    # 스크린리더는 툴팁을 읽지 못한다. 접근 가능한 설명도 함께 붙어야 한다.
+    assert all(d.accessibleDescription() for d in dots)
+
+
+def test_calendar_identity_line_is_never_folded_away(make_window, db):
+    """'직접 입력한 달력이 아니다'는 설명이 아니라 정체성이다 — 접지 않는다."""
+    _seed_task(db)
+    window = make_window(db)
+    window.go("calendar")
+    texts = _labels(window.views["calendar"])
+    assert any("직접 입력한 달력이 아니라" in t for t in texts), texts
+
+
 def _labels(widget) -> list[str]:
     return [label.text() for label in widget.findChildren(QLabel) if label.text()]
 
@@ -331,16 +401,16 @@ def _seed_cycle(db: Database, task_id: int, **overrides) -> None:
 
 
 def test_task_detail_shows_when_section_with_cycle(make_window, db):
-    """업무 상세는 한 화면에서 What 다음에 When을 보여준다."""
+    """When은 제 탭 안에서 답을 먼저 말한다."""
     task_id = _seed_task(db)
     _seed_cycle(db, task_id)
     view = make_window(db).views["tasks"]
     view.open_task(task_id)
 
-    texts = _labels(view)
-    assert any("When" in t for t in texts)
+    assert any("언제 하는 일인가" in t for t in _buttons(view))
+    texts = _labels(view.pages[tasks_view.WHEN])
     assert any("매년 9~11월" in t for t in texts), texts
-    assert any("신뢰도" in t for t in texts)
+    assert any("신뢰도" in t for t in _labels(view))
 
 
 def test_task_detail_without_cycle_explains_insufficient_data(make_window, db):
@@ -349,8 +419,8 @@ def test_task_detail_without_cycle_explains_insufficient_data(make_window, db):
     view = make_window(db).views["tasks"]
     view.open_task(task_id)
 
+    assert any("언제 하는 일인가" in t for t in _buttons(view))
     texts = _labels(view)
-    assert any("When" in t for t in texts)
     # 확정된 주기가 없으므로 '🔁 매년 ...' 반복 헤드라인은 뜨지 않아야 한다.
     assert not any(t.startswith("🔁") for t in texts), texts
     assert not any("다음 예상 시점" in t for t in texts)
@@ -582,8 +652,8 @@ def test_task_detail_shows_how_section_with_ordered_steps(make_window, db):
     view = make_window(db).views["tasks"]
     view.open_task(task_id)
 
-    texts = _labels(view)
-    assert any(t == "How" for t in texts)
+    assert any("어떻게 처리했나" in t for t in _buttons(view))
+    texts = _labels(view.pages[tasks_view.HOW])
     assert any("2025년엔 이렇게 처리한 것으로 보입니다" in t for t in texts), texts
     assert any("접수" in t for t in texts)
     assert any("확인되지 않습니다" in t for t in texts), "공백을 지어내지 않고 밝혀야 합니다"
@@ -594,8 +664,8 @@ def test_task_detail_without_steps_explains_absence(make_window, db):
     view = make_window(db).views["tasks"]
     view.open_task(task_id)
 
-    texts = _labels(view)
-    assert any(t == "How" for t in texts)
+    assert any("어떻게 처리했나" in t for t in _buttons(view))
+    texts = _labels(view.pages[tasks_view.HOW])
     assert any("재구성할 자료가 없습니다" in t for t in texts), texts
 
 
@@ -745,23 +815,136 @@ def test_settings_writes_audit_log_csv(make_window, db, tmp_path):
     dialog.close()
 
 
-def test_settings_large_text_toggle_persists_and_rescales(make_window, db, qapp):
+@pytest.fixture
+def restore_theme(qapp):
+    """테마를 건드리는 시험은 끝나고 반드시 되돌린다.
+
+    QApplication은 세션 하나를 공유하므로, 어둡게로 바꿔 놓고 끝내면 뒤에
+    도는 시험이 남의 색으로 그려진다.
+    """
+    yield
+    theme.apply(qapp, "medium", "light")
+
+
+def test_settings_text_size_has_three_steps_and_rescales(make_window, db, qapp,
+                                                         restore_theme):
+    """글자 크기는 켬/끔이 아니라 소·중·대 3단계다."""
     from app.ui.views.settings import SettingsDialog
 
-    from PySide6.QtWidgets import QCheckBox
+    dialog = SettingsDialog(db, make_window(db))
+    assert dialog.size_choice.current() == "medium"
+
+    dialog.size_choice.chosen.emit("large")
+    assert db.get_meta("text_size") == "large"
+    assert "font-size: 17px" in qapp.styleSheet()     # 14 * 1.2
+
+    dialog.size_choice.chosen.emit("small")
+    assert db.get_meta("text_size") == "small"
+    assert "font-size: 13px" in qapp.styleSheet()     # 14 * 0.9
+    dialog.close()
+
+
+def test_settings_migrates_the_old_large_text_setting(make_window, db, qapp,
+                                                      restore_theme):
+    """예전에 '글자 크게 보기'를 켜 둔 사람은 갱신 후에도 크게 봐야 한다."""
+    from app.ui.views.settings import SettingsDialog
+
+    db.set_meta("large_text", "1")
+    dialog = SettingsDialog(db, make_window(db))
+    assert dialog.size_choice.current() == "large"
+    dialog.close()
+
+
+def test_settings_theme_switches_the_palette_and_persists(make_window, db, qapp,
+                                                          restore_theme):
+    from app.ui.views.settings import SettingsDialog
 
     dialog = SettingsDialog(db, make_window(db))
-    checkbox = dialog.findChild(QCheckBox)
-    assert checkbox is not None
-    assert not checkbox.isChecked()
+    assert dialog.theme_choice.current() == "system"
 
-    checkbox.setChecked(True)
-    assert db.get_meta("large_text") == "1"
-    assert "font-size: 17px" in qapp.styleSheet()
+    dialog.theme_choice.chosen.emit("dark")
+    assert db.get_meta("theme_mode") == "dark"
+    assert theme.current_mode() == "dark"
+    assert theme.BG == theme.DARK["BG"]
+    assert theme.DARK["BG"] in qapp.styleSheet()
 
-    checkbox.setChecked(False)
-    assert db.get_meta("large_text") == "0"
+    dialog.theme_choice.chosen.emit("light")
+    assert db.get_meta("theme_mode") == "light"
+    assert theme.BG == theme.LIGHT["BG"]
     dialog.close()
+
+
+def test_status_colors_follow_the_theme(restore_theme, qapp):
+    """색을 값으로 담아 둔 표가 있으면 테마를 바꿔도 그 표만 옛 색으로 남는다."""
+    from app.ui.views.documents import PARSE_LABEL
+
+    theme.apply(qapp, "medium", "light")
+    light = theme.color(PARSE_LABEL["ok"][1])
+    theme.apply(qapp, "medium", "dark")
+    assert theme.color(PARSE_LABEL["ok"][1]) != light
+
+
+def test_settings_groups_ai_and_activity_under_system(make_window, db):
+    """로컬 AI 현황과 최근 활동은 '시스템' 한 갈래에서 함께 본다."""
+    from app.ui.views.settings import SettingsDialog
+
+    db.audit("document.open", r"D:\자료\문서.hwp", result="ok")
+    dialog = SettingsDialog(db, make_window(db))
+    texts = _labels(dialog.panes["system"])
+
+    assert any("로컬 AI" in t for t in texts)
+    assert any("최근 활동" in t for t in texts)
+    assert any("저장 위치" in t for t in texts)
+    assert any("document.open" in t for t in texts)
+    # 화면 갈래에는 그것들이 섞여 있지 않다 — 매일 쓰는 것과 가끔 보는 것.
+    assert not any("최근 활동" in t for t in _labels(dialog.panes["appearance"]))
+    dialog.close()
+
+
+def test_settings_lists_source_folders_with_a_way_to_change_them(make_window, db):
+    """자료 폴더는 최초 지정으로 확정되지 않는다 — 바꿀 수 있어야 한다."""
+    from app.ui.views.settings import SettingsDialog
+
+    db.add_source(r"D:\전임자자료")
+    dialog = SettingsDialog(db, make_window(db))
+    pane = dialog.panes["sources"]
+
+    assert any(r"D:\전임자자료" in t for t in _labels(pane))
+    assert any("위치 변경" in t for t in _buttons(pane))
+    assert any("폴더 추가" in t for t in _buttons(pane))
+    # '읽는 곳'과 '쓰는 곳'의 차이를 화면에서 직접 설명한다.
+    assert any("읽는 곳" in t for t in _labels(pane))
+    dialog.close()
+
+
+def test_changing_a_source_folder_keeps_the_analysis(db):
+    """폴더를 바꿨다고 쌓아 둔 분석과 교정값을 잃게 할 수는 없다."""
+    source_id = db.add_source(r"D:\옛폴더")
+    db.upsert_document(source_id, {
+        "path": r"D:\옛폴더\보고서.hwp", "filename": "보고서.hwp",
+        "ext": ".hwp", "parse_status": "ok", "hash": "a",
+    })
+
+    assert db.change_source_path(source_id, r"D:\새폴더") is True
+    assert db.sources()[0]["path"] == r"D:\새폴더"
+    assert db.counts()["documents"] == 1
+
+    # 이미 다른 자료원이 쓰는 경로로는 바꿀 수 없다 (경로는 유일하다).
+    other = db.add_source(r"D:\다른폴더")
+    assert db.change_source_path(other, r"D:\새폴더") is False
+
+
+def test_removing_a_source_folder_reports_what_it_deletes(db):
+    source_id = db.add_source(r"D:\지울폴더")
+    db.upsert_document(source_id, {
+        "path": r"D:\지울폴더\문서.hwp", "filename": "문서.hwp",
+        "ext": ".hwp", "parse_status": "ok", "hash": "b",
+    })
+
+    assert db.source_document_counts()[source_id] == 1
+    db.remove_source(source_id)
+    assert db.sources() == []
+    assert db.counts()["documents"] == 0
 
 
 def test_documents_view_hides_non_document_files_by_default(make_window, db):

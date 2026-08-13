@@ -4,7 +4,16 @@
 `당신이 인수받은 업무는 7개입니다`가 여기에 온다.
 
 먼저 읽을 문서에는 반드시 이유를 붙인다. 이유 없는 별점은 신뢰를 만들지 못한다.
-When(주기)은 Step 7에서, How(처리 순서)는 Step 8에서 이 화면에 이어 붙는다.
+
+상세를 탭으로 나눈 이유
+    한 업무가 답해야 하는 질문은 넷이고, 서로 성격이 다르다. 넷을 세로로
+    이어 붙이면 화면은 "긴 문서 하나"가 되어, 지금 읽는 문단이 어느 질문의
+    답인지 스크롤 도중에 잃는다. 게다가 각 구획마다 교정 버튼이 붙으므로
+    이어 붙인 화면은 버튼밭이 된다.
+
+    탭으로 끊으면 한 번에 한 질문만 보이고, 탭 이름에 건수를 달아 **누르기
+    전에** 규모를 알린다. 확인이 필요한 탭에는 ◐를 붙여, 손댈 곳이 어느
+    탭인지 열어 보지 않고도 알 수 있게 한다.
 """
 
 from __future__ import annotations
@@ -25,8 +34,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -39,16 +48,18 @@ from ..widgets import (
     Card,
     EmptyState,
     FlowGrid,
+    InfoDot,
     ListRow,
-    SectionHeader,
+    Page,
     SubPanel,
+    TabBar,
     TaskCard,
     TimelineGrid,
     UnknownBlock,
     clear_layout,
+    hint_row,
     legend_text,
     muted_label,
-    note_label,
     open_original,
     view_title,
 )
@@ -61,6 +72,23 @@ STAGES = [
     ("업무 파악하기", "in_task", "documents"),
 ]
 
+# 상세 화면의 네 질문. 라벨은 개념 이름이 아니라 사용자가 실제로 품는 질문이다.
+READ, WHEN, HOW, DOCS = "read", "when", "how", "docs"
+DETAIL_TABS = (
+    (READ, "먼저 읽을 문서"),
+    (WHEN, "언제 하는 일인가"),
+    (HOW, "어떻게 처리했나"),
+    (DOCS, "이 업무의 문서"),
+)
+DETAIL_HINTS = {
+    READ: "이 업무를 처음 맡았다면 이 순서로 읽으세요. 고른 이유를 함께 적었습니다.",
+    WHEN: "자료에 남은 문서의 시점을 연도별로 편 것입니다. "
+          "세로로 같은 달이 겹치면 반복입니다.",
+    HOW: "전임자가 남긴 문서의 순서로 되짚은 것입니다. 틀린 곳은 여기서 바로 고칩니다.",
+    DOCS: "★은 이 업무를 대표하는 문서입니다. ⋯을 누르면 다른 업무로 옮기거나 "
+          "대표로 지정합니다.",
+}
+
 
 
 class TasksView(QWidget):
@@ -72,6 +100,7 @@ class TasksView(QWidget):
         self.db = db
         self._task_id: int | None = None   # None이면 목록, 값이 있으면 상세
         self._how_year: dict[int, int] = {}   # task_id -> 사용자가 고른 연도
+        self._tab = READ
         self.setObjectName("Canvas")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -81,47 +110,69 @@ class TasksView(QWidget):
 
         # "지금 무엇을 보고 있는가"는 스크롤을 따라 사라지면 안 된다.
         # 제목·상태·조작을 흰 띠에 고정하고, 그 아래를 회색 본문으로 둔다.
+        # 탭은 그 띠의 아래 모서리를 물고 앉는다 — 떠 있는 글자가 아니라
+        # 머리에 붙은 손잡이로 보여야 한다.
         header = QWidget()
         header.setObjectName("ViewHeader")
         header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.head = QVBoxLayout(header)
-        self.head.setContentsMargins(
-            theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_LG
-        )
+        head_wrap = QVBoxLayout(header)
+        head_wrap.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, 0)
+        head_wrap.setSpacing(theme.SP_MD)
+
+        self.head = QVBoxLayout()
+        self.head.setContentsMargins(0, 0, 0, 0)
         self.head.setSpacing(theme.SP_SM)
+        head_wrap.addLayout(self.head)
+
+        self.tabs = TabBar(DETAIL_TABS)
+        self.tabs.switched.connect(self._switch)
+        self.tabs.setVisible(False)
+        head_wrap.addWidget(self.tabs)
+
+        # 탭이 없을 때(목록)는 머리 띠 아래 여백을 대신 채운다.
+        self._head_pad = QWidget()
+        self._head_pad.setFixedHeight(theme.SP_LG)
+        head_wrap.addWidget(self._head_pad)
         outer.addWidget(header)
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setObjectName("PageScroll")
         # 카드 그리드는 세로로만 늘어나야 한다. 가로 스크롤을 허용하면
-        # 좁은 창에서 열 수가 줄지 않고 카드가 잘린 채 옆으로 밀린다.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        body = QWidget()
-        body.setObjectName("PageBody")
-        body.setAutoFillBackground(True)
-        self.column = QVBoxLayout(body)
-        self.column.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_XL)
-        self.column.setSpacing(theme.SP_MD)
-        self.column.setAlignment(Qt.AlignmentFlag.AlignTop)
-        scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        # 좁은 창에서 열 수가 줄지 않고 카드가 잘린 채 옆으로 밀린다(Page가 막는다).
+        self.stack = QStackedWidget()
+        self.list_page = Page()
+        self.stack.addWidget(self.list_page)
+        self.pages: dict[str, Page] = {}
+        for key, _label in DETAIL_TABS:
+            # 본문 기둥의 폭을 묶는다. 창을 넓혔을 때 한 줄이 끝없이 길어지면
+            # 다음 줄 첫 글자를 눈이 못 찾는다.
+            page = Page(max_width=theme.CONTENT_MAX_W)
+            self.pages[key] = page
+            self.stack.addWidget(page)
+        outer.addWidget(self.stack, 1)
 
+        self.column = self.list_page.column
         self.refresh()
 
     # ── 진입점 ──────────────────────────────────────────────────────
     def refresh(self) -> None:
+        """분석 중에는 1.5초마다 불린다. 보고 있던 탭을 절대 빼앗지 않는다."""
         clear_layout(self.head)
-        clear_layout(self.column)
         if self._task_id is not None and self.db.task(self._task_id):
             self._render_detail(self._task_id)
         else:
             self._task_id = None
+            self.tabs.setVisible(False)
+            self._head_pad.setVisible(True)
+            self.stack.setCurrentWidget(self.list_page)
+            self.column = self.list_page.reset()
             self._render_list()
+
+    def _switch(self, key: str) -> None:
+        self._tab = key
+        self.stack.setCurrentWidget(self.pages[key])
 
     def open_task(self, task_id: int) -> None:
         self._task_id = task_id
+        self._tab = READ   # 새 업무를 열면 언제나 "무엇부터 읽나"부터다
         self.refresh()
 
     def back(self) -> None:
@@ -137,15 +188,26 @@ class TasksView(QWidget):
             self._render_progress(counts)
             return
 
-        self.head.addWidget(
+        # 제목 옆 ⓘ 하나에 "이 숫자가 어디서 나왔는가"와 "카드를 어떻게
+        # 읽는가"를 함께 접는다. 둘 다 첫 방문에만 필요한 말이다.
+        title_row = QHBoxLayout()
+        title_row.setSpacing(theme.SP_SM)
+        title_row.addWidget(
             view_title(f"당신이 인수받은 업무는 {len(tasks)}개로 추정됩니다")
         )
-        self.head.addWidget(
-            muted_label(
+        title_row.addWidget(
+            InfoDot(
                 f"전임자 자료 {counts['documents']:,}건을 살펴본 결과입니다. "
-                "AI가 제안한 것이므로 확인하고 고칠 수 있습니다."
-            )
+                "AI가 제안한 것이므로 확인하고 고칠 수 있습니다.<br><br>"
+                "카드를 누르면 그 업무를 자세히 봅니다. 왼쪽 띠 색은 업무를 "
+                "구분하는 표시이고, 아래 열두 칸은 1월부터 12월까지 그 업무를 "
+                "하는 달입니다."
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
         )
+        title_row.addStretch(1)
+        self.head.addLayout(title_row)
 
         # 인수인계에서 가장 먼저 궁금한 건 "얼마나 끝냈나"다. 카드를 세어
         # 알아내게 하지 말고 머리에서 바로 말한다.
@@ -157,12 +219,6 @@ class TasksView(QWidget):
             marks.addWidget(Badge(f"◐ 확인 필요 {len(tasks) - done}", "attention"))
         marks.addStretch(1)
         self.head.addLayout(marks)
-
-        self.column.addWidget(
-            note_label("카드를 누르면 그 업무를 자세히 봅니다. "
-                       "왼쪽 띠 색은 업무를 구분하는 표시이고, 아래 열두 칸은 "
-                       "1월부터 12월까지 그 업무를 하는 달입니다.")
-        )
 
         # 카드 그리드로 한 화면 조망. 창을 넓히면 열이 늘어난다.
         grid = FlowGrid()
@@ -204,21 +260,26 @@ class TasksView(QWidget):
         # 판에 얹어 "이만큼은 업무에 못 넣었다"를 분명히 말한다.
         panel = SubPanel()
         panel.setMaximumWidth(theme.CONTENT_MAX_W)
+        head_row = QHBoxLayout()
+        head_row.setSpacing(theme.SP_SM)
         head = QLabel("⚠ " + " · ".join(parts))
         head.setObjectName("LeftoverHead")
-        panel.body.addWidget(head)
-        panel.body.addWidget(
-            muted_label(
+        head_row.addWidget(head)
+        head_row.addWidget(
+            InfoDot(
                 "미분류가 남는 것은 정상입니다. 확신이 없는 문서를 억지로 "
-                "업무에 밀어 넣지 않습니다.",
-                small=True,
-            )
+                "업무에 밀어 넣지 않습니다."
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
         )
+        head_row.addStretch(1)
         link = QPushButton("문서에서 보기 →")
         link.setObjectName("Link")
         link.setCursor(Qt.CursorShape.PointingHandCursor)
         link.clicked.connect(self.go_documents.emit)
-        panel.body.addWidget(link, alignment=Qt.AlignmentFlag.AlignLeft)
+        head_row.addWidget(link)
+        panel.body.addLayout(head_row)
         self.column.addWidget(panel)
 
     def _render_progress(self, counts: dict) -> None:
@@ -261,6 +322,8 @@ class TasksView(QWidget):
     # ── 상세 ────────────────────────────────────────────────────────
     def _render_detail(self, task_id: int) -> None:
         row = self.db.task(task_id)
+        self.tabs.setVisible(True)
+        self._head_pad.setVisible(False)
 
         back = QPushButton("←  업무 목록")
         back.setObjectName("BackLink")
@@ -290,50 +353,67 @@ class TasksView(QWidget):
             title_row.addWidget(approve)
         self.head.addLayout(title_row)
 
-        if row["description"]:
-            self.head.addWidget(muted_label(row["description"]))
-
-        # 두 축을 함께 보여준다. 왼쪽은 "사람이 확인했는가"(§9의 4단계),
-        # 오른쪽은 "묶음이 얼마나 단단한가"(§7.2). 둘은 다른 질문이다.
+        # 상태 두 축과 규모를 한 줄에 모은다. 왼쪽은 "사람이 확인했는가"
+        # (§9의 4단계), 그다음은 "묶음이 얼마나 단단한가"(§7.2) — 다른
+        # 질문이므로 함께 보여야 하지만, 각각 한 줄씩 차지할 것은 아니다.
+        picks = self.db.task_reading(task_id)
+        docs = self.db.task_documents(task_id)
         marks = QHBoxLayout()
         marks.setSpacing(theme.SP_SM)
         marks.addWidget(Badge.state(status.of_task(row)))
         note, kind = status.cluster_note(row["confidence"])
         marks.addWidget(Badge(note, kind))
+        # db.task()는 집계 열을 들고 오지 않는다. 규모는 문서 목록에서 센다.
+        meta = QLabel(_doc_span(docs))
+        meta.setObjectName("MetaChip")
+        meta.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        marks.addWidget(meta)
         marks.addStretch(1)
         self.head.addLayout(marks)
 
-        self._render_reading(task_id)
-        self._render_when(task_id)
-        self._render_how(task_id)
-        self._render_by_year(task_id)
+        # 설명은 상태보다 아래다. 위에 두면 제목과 붙어 두 줄 제목처럼 읽힌다.
+        if row["description"]:
+            self.head.addWidget(muted_label(row["description"], small=True))
 
-    def _render_reading(self, task_id: int) -> None:
-        picks = self.db.task_reading(task_id)
-        self.column.addWidget(
-            SectionHeader(
-                "먼저 읽을 문서",
-                hint="이 업무를 처음 맡았다면 이 순서로 읽으세요. "
-                     "고른 이유를 함께 적었습니다.",
-            )
+        cycle = self.db.task_cycle(task_id)
+        self.tabs.set_count(READ, "먼저 읽을 문서", len(picks))
+        self.tabs.set_count(DOCS, "이 업무의 문서", len(docs))
+        # 손댈 곳이 있는 탭은 열어 보기 전에 알려 준다.
+        self.tabs.set_label(
+            WHEN,
+            "언제 하는 일인가"
+            + ("  ◐" if cycle and status.of_cycle(cycle) != status.CONFIRMED else ""),
         )
 
+        self._render_reading(self.pages[READ].reset(), picks)
+        self._render_when(self.pages[WHEN].reset(), task_id, cycle)
+        self._render_how(self.pages[HOW].reset(), task_id)
+        self._render_by_year(self.pages[DOCS].reset(), task_id, docs)
+
+        self.tabs.select(self._tab)
+        self.stack.setCurrentWidget(self.pages[self._tab])
+
+    def _render_reading(self, column: QVBoxLayout, picks) -> None:
+        column.addWidget(hint_row("이 순서로 읽으세요", DETAIL_HINTS[READ]))
+
         if not picks:
-            self.column.addWidget(muted_label("추천할 문서를 고르지 못했습니다."))
+            column.addWidget(
+                UnknownBlock("추천할 문서를 고르지 못했습니다. "
+                             "이 업무의 문서가 적거나 시점을 확인하지 못했습니다.")
+            )
             return
 
         for index, pick in enumerate(picks, start=1):
             card = Card()
-            card.setMaximumWidth(theme.CONTENT_MAX_W)
             card.body.setSpacing(theme.SP_SM)
 
             top = QHBoxLayout()
-            top.setSpacing(theme.SP_SM)
+            top.setSpacing(theme.SP_MD)
             rank = QLabel(str(index))
             rank.setObjectName("RankChip")
             rank.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            rank.setFixedWidth(24)
-            top.addWidget(rank)
+            rank.setFixedSize(24, 24)
+            top.addWidget(rank, 0, Qt.AlignmentFlag.AlignTop)
 
             name = QPushButton(f"📄 {pick['filename']}")
             name.setObjectName("CardTitle")
@@ -342,19 +422,26 @@ class TasksView(QWidget):
             name.clicked.connect(lambda _=False, p=pick["path"]: self._open(p))
             top.addWidget(name)
             top.addStretch(1)
-            top.addWidget(muted_label(_when(pick), small=True, wrap=False))
+            when = QLabel(_when(pick))
+            when.setObjectName("MetaChip")
+            when.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            top.addWidget(when, 0, Qt.AlignmentFlag.AlignTop)
             card.body.addLayout(top)
 
-            # 이유 없는 추천은 만들지 않는다.
+            # 이유 없는 추천은 만들지 않는다. 판에 얹어 "이건 근거"라고 말한다.
             reason = SubPanel()
-            reason.body.addWidget(muted_label(pick["reason"], small=True))
+            reason.body.addWidget(muted_label(f"고른 이유 · {pick['reason']}", small=True))
             card.body.addWidget(reason)
-            self.column.addWidget(card)
+            column.addWidget(card)
 
-    def _render_when(self, task_id: int) -> None:
+    def _render_when(self, column: QVBoxLayout, task_id: int, cycle) -> None:
         """When — 격자를 세로로 읽어 반복 주기를 보여준다.
 
         같은 격자를 Step 8에서 가로로 읽어 처리 순서(How)를 만든다.
+
+        읽는 순서를 화면 순서와 맞춘다. ① 결론 한 줄 → ② 근거 격자 →
+        ③ 교정. 결론과 근거가 섞이면 무엇이 주장이고 무엇이 증거인지
+        구분되지 않는다.
         """
         rows = self.db.task_grid_documents(task_id)
         docs = [
@@ -367,64 +454,48 @@ class TasksView(QWidget):
         ]
         grid = timeline.build_grid(docs)
 
-        self.column.addWidget(
-            SectionHeader(
-                "언제 하는 일인가",
-                tag="When",
-                hint="자료에 남은 문서의 시점을 연도별로 편 것입니다. "
-                     "세로로 같은 달이 겹치면 반복입니다.",
-            )
-        )
-
         if not grid.years:
-            self.column.addWidget(
+            column.addWidget(
                 UnknownBlock("이 업무 문서의 시점을 확인할 수 없어 반복 여부를 판단하지 못했습니다.")
             )
+            column.addWidget(self._cycle_actions(task_id, cycle))
             return
-        if len(grid.years) < 2:
-            self.column.addWidget(
-                UnknownBlock(
-                    f"반복 여부를 판단할 자료가 부족합니다. 현재 확인된 연도가 "
-                    f"{len(grid.years)}개뿐입니다. 최소 2개 연도가 있어야 반복을 제시합니다."
-                )
-            )
 
-        cycle = self.db.task_cycle(task_id)
         if cycle and cycle["kind"] == "none":
             # 사람이 '반복 아님'으로 확정한 업무. 빈칸으로 두면 시스템이
             # 못 찾은 것인지 사람이 아니라고 한 것인지 구분되지 않는다.
-            self.column.addWidget(Badge(status.label(status.CONFIRMED), "ok"))
-            self.column.addWidget(muted_label("반복하지 않는 업무로 확인했습니다."))
-            self.column.addLayout(self._cycle_actions(task_id, cycle))
+            answer = Card(tone="primary")
+            head = QHBoxLayout()
+            head.setSpacing(theme.SP_SM)
+            head.addWidget(Badge(status.label(status.CONFIRMED), "ok"))
+            head.addStretch(1)
+            answer.body.addLayout(head)
+            line = QLabel("반복하지 않는 업무로 확인했습니다")
+            line.setObjectName("Answer")
+            answer.body.addWidget(line)
+            column.addWidget(answer)
+            column.addWidget(self._cycle_actions(task_id, cycle))
             return
+
         if cycle:
             # 결론을 한 줄로 먼저 말한다. 격자는 그 근거다.
-            headline = ListRow()
-            headline.setMaximumWidth(theme.CONTENT_MAX_W)
-            headline.row.addWidget(Badge.state(status.of_cycle(cycle)))
-            answer = QLabel(f"🔁 {cycle_headline(cycle)} 반복")
-            answer.setObjectName("Answer")
-            headline.row.addWidget(answer)
-            headline.row.addWidget(
-                muted_label(f"· {cycle_note(cycle)}", small=True, wrap=False)
-            )
-            headline.row.addStretch(1)
-            self.column.addWidget(headline)
+            answer = Card(tone="primary")
+            answer.body.setSpacing(theme.SP_SM)
+            head = QHBoxLayout()
+            head.setSpacing(theme.SP_SM)
+            line = QLabel(f"🔁 {cycle_headline(cycle)} 반복")
+            line.setObjectName("Answer")
+            head.addWidget(line)
+            head.addWidget(Badge.state(status.of_cycle(cycle)))
+            head.addStretch(1)
+            answer.body.addLayout(head)
+            answer.body.addWidget(muted_label(cycle_note(cycle), small=True))
 
-        years = grid.years[-6:]   # 화면 폭을 넘지 않도록 최근 6개 연도만
-        cells = {(y, m): bool(grid.doc_ids(y, m)) for y in years for m in range(1, 13)}
-        today = date.today()
-        current = (today.year, today.month) if today.year in years else None
-        confidence = cycle["confidence"] if cycle else "low"
-        self.column.addWidget(TimelineGrid(years, cells, confidence, current))
-        self.column.addWidget(muted_label(legend_text(), small=True))
-
-        if cycle:
-            next_text = next_occurrence_text(cycle, today)
+            next_text = next_occurrence_text(cycle, date.today())
             if next_text:
                 foot = QHBoxLayout()
                 foot.setSpacing(theme.SP_SM)
-                nxt = QLabel(f"다음 예상 시점: {next_text}")
+                nxt = QLabel(f"다음 예상 시점  {next_text}")
                 nxt.setObjectName("WhenChip")
                 nxt.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
                 foot.addWidget(nxt)
@@ -434,14 +505,41 @@ class TasksView(QWidget):
                 go.setCursor(Qt.CursorShape.PointingHandCursor)
                 go.clicked.connect(self.go_calendar.emit)
                 foot.addWidget(go)
-                self.column.addLayout(foot)
+                answer.body.addLayout(foot)
+            column.addWidget(answer)
 
-        self.column.addLayout(self._cycle_actions(task_id, cycle))
+        if len(grid.years) < 2:
+            column.addWidget(
+                UnknownBlock(
+                    f"반복 여부를 판단할 자료가 부족합니다. 현재 확인된 연도가 "
+                    f"{len(grid.years)}개뿐입니다. 최소 2개 연도가 있어야 반복을 제시합니다."
+                )
+            )
 
-    def _cycle_actions(self, task_id: int, cycle) -> QHBoxLayout:
-        """추정을 사실로 바꾸는 자리. AI 결과 옆에는 항상 교정 수단이 있어야 한다."""
-        row = QHBoxLayout()
+        years = grid.years[-6:]   # 화면 폭을 넘지 않도록 최근 6개 연도만
+        cells = {(y, m): bool(grid.doc_ids(y, m)) for y in years for m in range(1, 13)}
+        today = date.today()
+        current = (today.year, today.month) if today.year in years else None
+        confidence = cycle["confidence"] if cycle else "low"
+
+        column.addWidget(hint_row("이렇게 판단한 근거", DETAIL_HINTS[WHEN]))
+        column.addWidget(TimelineGrid(years, cells, confidence, current))
+        column.addWidget(muted_label(legend_text(), small=True))
+
+        column.addWidget(self._cycle_actions(task_id, cycle))
+
+    def _cycle_actions(self, task_id: int, cycle) -> QWidget:
+        """추정을 사실로 바꾸는 자리. AI 결과 옆에는 항상 교정 수단이 있어야 한다.
+
+        본문에 섞어 두면 버튼이 내용처럼 보인다. 얇은 줄로 한 번 끊고
+        '조작 구역'을 따로 만든다.
+        """
+        bar = QFrame()
+        bar.setObjectName("ActionBar")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, theme.SP_MD, 0, 0)
         row.setSpacing(theme.SP_SM)
+
         if cycle is not None and status.of_cycle(cycle) != status.CONFIRMED:
             confirm = QPushButton("이 주기가 맞습니다")
             confirm.setObjectName("Confirm")
@@ -462,9 +560,9 @@ class TasksView(QWidget):
             none.clicked.connect(lambda: self._no_cycle(task_id))
             row.addWidget(none)
         row.addStretch(1)
-        return row
+        return bar
 
-    def _render_how(self, task_id: int) -> None:
+    def _render_how(self, column: QVBoxLayout, task_id: int) -> None:
         """How — 같은 격자를 가로로 읽어 처리 순서를 재현한다.
 
         인과관계 추론이 아니라 시간 근접 + 문서 유형 순서에 기반한
@@ -472,19 +570,8 @@ class TasksView(QWidget):
         앵커링되고, 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다.
         """
         years = self.db.task_years(task_id)
-        self.column.addWidget(
-            SectionHeader(
-                "어떻게 처리했나",
-                tag="How",
-                hint="전임자가 남긴 문서의 순서로 되짚은 것입니다. "
-                     "틀린 곳은 여기서 바로 고칠 수 있습니다.",
-            )
-        )
-
         if not years:
-            self.column.addWidget(
-                UnknownBlock("처리 순서를 재구성할 자료가 없습니다.")
-            )
+            column.addWidget(UnknownBlock("처리 순서를 재구성할 자료가 없습니다."))
             return
 
         default_year = timeline.default_how_year(years)
@@ -497,6 +584,7 @@ class TasksView(QWidget):
         lead = QLabel(f"{selected}년엔 이렇게 처리한 것으로 보입니다")
         lead.setObjectName("Answer")
         header.addWidget(lead)
+        header.addWidget(InfoDot(DETAIL_HINTS[HOW]), 0, Qt.AlignmentFlag.AlignVCenter)
         header.addStretch(1)
 
         ordered_years = sorted(years, reverse=True)
@@ -508,21 +596,22 @@ class TasksView(QWidget):
             lambda _index, t=task_id, c=combo: self._change_how_year(t, c.currentData())
         )
         header.addWidget(combo)
-        self.column.addLayout(header)
+        column.addLayout(header)
 
         steps = self.db.task_steps(task_id, selected)
         if not steps:
-            self.column.addWidget(
+            column.addWidget(
                 UnknownBlock(f"{selected}년에는 처리 순서를 재구성할 자료가 없습니다.")
             )
             add = QPushButton("＋ 단계 직접 추가")
             add.setObjectName("Link")
+            add.setCursor(Qt.CursorShape.PointingHandCursor)
             add.clicked.connect(lambda: self._add_step(task_id, selected, 0))
-            self.column.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
+            column.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
             return
 
         if any(s["decided_by"] == "user" for s in steps):
-            self.column.addWidget(
+            column.addWidget(
                 muted_label(
                     f"{status.symbol(status.CONFIRMED)} 이 연도의 순서는 담당자가 "
                     f"확인했습니다. 다시 분석해도 바뀌지 않습니다.",
@@ -533,8 +622,7 @@ class TasksView(QWidget):
         last = len(steps)
         for position, step in enumerate(steps, start=1):
             line = ListRow()
-            line.setMaximumWidth(theme.CONTENT_MAX_W)
-            line.row.setSpacing(theme.SP_SM)
+            line.row.setSpacing(theme.SP_MD)
 
             # 번호는 순서 그 자체다. 흐린 글자로 두면 순서가 아니라 장식이 된다.
             mark = QLabel(_circled(step["ordinal"]))
@@ -566,20 +654,14 @@ class TasksView(QWidget):
                 line.row.addWidget(doc_btn)
             line.row.addStretch(1)
 
+            # 조작은 둘만 밖에 둔다. 순서 바꾸기는 자주 쓰고 결과가 눈앞에서
+            # 확인되지만, 이름·추가·삭제까지 다섯 개를 늘어놓으면 줄마다
+            # 버튼밭이 되어 정작 단계 이름이 안 읽힌다. 나머지는 ⋯ 안으로.
             for text, tip, slot, enabled in (
                 ("▲", "위로", lambda _=False, s=step["id"]: self._move_step(s, -1),
                  position > 1),
                 ("▼", "아래로", lambda _=False, s=step["id"]: self._move_step(s, 1),
                  position < last),
-                ("✎", "단계 이름 수정",
-                 lambda _=False, s=step["id"], l=step["label"]: self._rename_step(s, l),
-                 True),
-                ("＋", "이 아래에 단계 추가",
-                 lambda _=False, t=task_id, y=selected, o=step["ordinal"]:
-                     self._add_step(t, y, o), True),
-                ("✕", "이 단계 빼기",
-                 lambda _=False, s=step["id"], l=step["label"]: self._delete_step(s, l),
-                 True),
             ):
                 button = QPushButton(text)
                 button.setObjectName("IconButton")
@@ -590,30 +672,41 @@ class TasksView(QWidget):
                 button.clicked.connect(slot)
                 line.row.addWidget(button)
 
-            self.column.addWidget(line)
+            more = QPushButton("⋯")
+            more.setObjectName("IconButton")
+            more.setFixedWidth(26)
+            more.setCursor(Qt.CursorShape.PointingHandCursor)
+            more.setToolTip("이름을 고치거나, 단계를 넣고 뺍니다")
+            more.setMenu(self._step_menu(task_id, selected, step, more))
+            line.row.addWidget(more)
+
+            column.addWidget(line)
 
             # 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다.
             if step["gap_note"]:
-                gap = UnknownBlock(step["gap_note"])
-                gap.setMaximumWidth(theme.CONTENT_MAX_W)
-                self.column.addWidget(gap)
+                column.addWidget(UnknownBlock(step["gap_note"]))
+
+    def _step_menu(self, task_id: int, year: int, step, owner: QWidget) -> QMenu:
+        """메뉴의 부모는 항상 그 메뉴를 여는 버튼이다 (아래 '교정' 절 참고)."""
+        menu = QMenu(owner)
+        step_id, label, ordinal = step["id"], step["label"], step["ordinal"]
+        menu.addAction("단계 이름 수정", lambda: self._rename_step(step_id, label))
+        menu.addAction(
+            "이 아래에 단계 추가", lambda: self._add_step(task_id, year, ordinal)
+        )
+        menu.addSeparator()
+        menu.addAction("이 단계 빼기", lambda: self._delete_step(step_id, label))
+        return menu
 
     def _change_how_year(self, task_id: int, year: int) -> None:
         self._how_year[task_id] = year
         self.refresh()
 
-    def _render_by_year(self, task_id: int) -> None:
-        rows = self.db.task_documents(task_id)
-        self.column.addWidget(
-            SectionHeader(
-                f"이 업무의 문서 {len(rows):,}건",
-                hint="★은 이 업무를 대표하는 문서입니다. "
-                     "⋯을 누르면 다른 업무로 옮기거나 대표로 지정합니다.",
-            )
-        )
+    def _render_by_year(self, column: QVBoxLayout, task_id: int, rows) -> None:
+        column.addWidget(hint_row("연도별 분포", DETAIL_HINTS[DOCS]))
 
         if not rows:
-            self.column.addWidget(muted_label("배정된 문서가 없습니다."))
+            column.addWidget(UnknownBlock("이 업무에 배정된 문서가 없습니다."))
             return
 
         by_year: dict[str, int] = {}
@@ -629,15 +722,14 @@ class TasksView(QWidget):
             chip.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             years.addWidget(chip)
         years.addStretch(1)
-        self.column.addLayout(years)
+        column.addLayout(years)
 
         primary = self.db.primary_document(task_id)
         primary_id = primary["id"] if primary else None
 
         for row in rows[:30]:
             item = ListRow()
-            item.setMaximumWidth(theme.CONTENT_MAX_W)
-            item.row.setSpacing(theme.SP_SM)
+            item.row.setSpacing(theme.SP_MD)
 
             star = QLabel("★" if row["id"] == primary_id else "")
             star.setObjectName("PrimaryMark")
@@ -666,10 +758,10 @@ class TasksView(QWidget):
                 self._document_menu(task_id, row["id"], row["id"] == primary_id, more)
             )
             item.row.addWidget(more)
-            self.column.addWidget(item)
+            column.addWidget(item)
 
         if len(rows) > 30:
-            self.column.addWidget(
+            column.addWidget(
                 muted_label(f"… 외 {len(rows) - 30:,}건은 [문서]에서 볼 수 있습니다", small=True)
             )
 
@@ -965,6 +1057,16 @@ def _span(row) -> str:
     if first and last:
         return f"{count} · {first}~{last}" if first != last else f"{count} · {first}"
     return count
+
+
+def _doc_span(docs) -> str:
+    """상세 머리의 규모 한 조각. 몇 건인지와 몇 년치인지를 함께 말한다."""
+    years = sorted({d["eff_year"] for d in docs if d["eff_year"]})
+    text = f"문서 {len(docs):,}건"
+    if not years:
+        return text
+    period = str(years[0]) if years[0] == years[-1] else f"{years[0]}~{years[-1]}"
+    return f"{text} · {period}"
 
 
 def _when(row) -> str:

@@ -145,12 +145,55 @@ class Database:
         row = self.con.execute("SELECT id FROM sources WHERE path = ?", (text,)).fetchone()
         return row["id"]
 
+    def change_source_path(self, source_id: int, path: str | Path, kind: str = "") -> bool:
+        """자료원이 가리키는 폴더를 바꾼다.
+
+        최초 지정이 곧 확정이던 것이 문제였다 — 자료를 옮기거나 USB에서
+        네트워크 드라이브로 갈아타면 앱을 다시 만들 수밖에 없었다.
+
+        옛 경로로 쌓아 둔 문서 기록은 지우지 않는다. 다음 분석에서 새 폴더를
+        훑고, 옛 경로의 파일은 평소처럼 '원본 없음'으로 표시된다(ING-008).
+        분석 결과와 손으로 고친 교정값을 폴더 하나 바꿨다고 잃게 할 수는 없다.
+
+        이미 다른 자료원이 쓰는 경로면 False를 돌려준다 (path UNIQUE).
+        """
+        text = str(Path(path))
+        taken = self.con.execute(
+            "SELECT id FROM sources WHERE path = ? AND id != ?", (text, source_id)
+        ).fetchone()
+        if taken:
+            return False
+        old = self.con.execute(
+            "SELECT path FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
+        if old is None:
+            return False
+        if kind:
+            self.con.execute(
+                "UPDATE sources SET path = ?, kind = ? WHERE id = ?",
+                (text, kind, source_id),
+            )
+        else:
+            self.con.execute(
+                "UPDATE sources SET path = ? WHERE id = ?", (text, source_id)
+            )
+        self.audit("source.change", text, detail=f"이전: {old['path']}")
+        return True
+
     def remove_source(self, source_id: int) -> None:
         self.con.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         self.audit("source.remove", str(source_id))
 
     def sources(self) -> list[sqlite3.Row]:
         return self.con.execute("SELECT * FROM sources ORDER BY id").fetchall()
+
+    def source_document_counts(self) -> dict[int, int]:
+        """자료원별 문서 건수. 제거가 무엇을 지우는지 미리 보여주기 위한 것."""
+        rows = self.con.execute(
+            "SELECT source_id, COUNT(*) AS n FROM documents "
+            "WHERE parse_status != 'skipped' GROUP BY source_id"
+        ).fetchall()
+        return {row["source_id"]: row["n"] for row in rows}
 
     # ── 문서 ────────────────────────────────────────────────────────
     def upsert_document(self, source_id: int, fields: dict[str, Any]) -> int:

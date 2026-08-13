@@ -5,46 +5,198 @@
 하면 "기계가 한 말"로 분리되어 오히려 안 읽힌다. 구분은 근거 칩으로 한다.
 
 상태는 색만으로 구분하지 않는다. 항상 아이콘이나 텍스트를 동반한다(PRD §18.4).
+
+색은 두 벌(밝게·어둡게)이다. 모듈 전역 이름(TEXT, PRIMARY …)은 그대로 두고
+apply_mode()가 그 이름이 가리키는 값을 바꾼다. 화면 코드는 예전처럼
+theme.TEXT라고만 쓰면 되고, 어느 벌을 쓰는지는 신경 쓰지 않는다.
+
+한 가지 규칙만 지키면 된다: **색을 모듈 수준 상수에 미리 담아 두지 않는다.**
+import 시점에 값을 복사해 두면 테마를 바꿔도 그 사본은 옛 색으로 남는다.
+색이 필요한 표는 값 대신 이름을 담고 theme.color("TEXT")로 꺼낸다.
 """
 
 from __future__ import annotations
 
-# ── 색 ──────────────────────────────────────────────────────────────
-BG = "#FFFFFF"
-SURFACE = "#F7F8FA"
-SURFACE_ALT = "#EEF1F5"
-BORDER = "#E3E6EB"
-BORDER_STRONG = "#CBD2DA"
+# ── 색 두 벌 ────────────────────────────────────────────────────────
+# 이름은 역할이지 색이 아니다. 어두운 벌에서 BG가 검어지듯, 같은 이름이
+# 같은 역할을 계속 맡는다.
+LIGHT = {
+    "BG": "#FFFFFF",
+    "SURFACE": "#F7F8FA",
+    "SURFACE_ALT": "#EEF1F5",
+    "BORDER": "#E3E6EB",
+    "BORDER_STRONG": "#CBD2DA",
 
-# 본문 바탕. 흰 종이 위에 흰 카드를 올리면 카드가 카드로 안 보인다 —
-# 바탕을 한 단계 낮춰야 카드·표·목록 줄이 각각 덩어리로 읽힌다.
-CANVAS = "#F1F4F8"
-BAND = "#F6F9FC"             # 표의 줄무늬. 가로줄을 눈으로 따라갈 수 있게 한다.
+    # 본문 바탕. 흰 종이 위에 흰 카드를 올리면 카드가 카드로 안 보인다 —
+    # 바탕을 한 단계 낮춰야 카드·표·목록 줄이 각각 덩어리로 읽힌다.
+    "CANVAS": "#F1F4F8",
+    "BAND": "#F6F9FC",           # 표의 줄무늬. 가로줄을 눈으로 따라갈 수 있게 한다.
 
-# 사이드바는 본문보다 한 단계 더 짙게. 길과 내용이 같은 색이면 화면이
-# 한 덩어리로 보이고, 메뉴가 "그냥 왼쪽에 있는 글자"가 된다.
-NAV_BG = "#E7EDF4"
-NAV_HOVER = "#DDE5EF"
+    # 사이드바는 본문보다 한 단계 더 짙게. 길과 내용이 같은 색이면 화면이
+    # 한 덩어리로 보이고, 메뉴가 "그냥 왼쪽에 있는 글자"가 된다.
+    "NAV_BG": "#E7EDF4",
+    "NAV_HOVER": "#DDE5EF",
 
-TEXT = "#1A1D21"
-TEXT_MUTED = "#6B7280"
-TEXT_DISABLED = "#9CA3AF"
-TEXT_ON_PRIMARY = "#FFFFFF"
+    "TEXT": "#1A1D21",
+    "TEXT_MUTED": "#6B7280",
+    "TEXT_DISABLED": "#9CA3AF",
+    # 부기(副記) 전용 회색. 본문 회색(TEXT_MUTED)과 같은 색을 쓰면 메뉴 이름
+    # 아래 설명이 "작은 본문"으로 읽혀 위계가 서지 않는다. 한 단계 더 물린다.
+    "TEXT_SUBTLE": "#8B95A3",
+    "TEXT_ON_PRIMARY": "#FFFFFF",
 
-PRIMARY = "#1B5FA8"          # 채도를 낮춘 청색 — 관공서 문서에서 익숙한 계열
-PRIMARY_HOVER = "#17518F"
-PRIMARY_SOFT = "#E8F0F8"
+    "PRIMARY": "#1B5FA8",        # 채도를 낮춘 청색 — 관공서 문서에서 익숙한 계열
+    "PRIMARY_HOVER": "#17518F",
+    "PRIMARY_SOFT": "#E8F0F8",
 
-ATTENTION = "#B45309"        # 확인 필요
-ATTENTION_SOFT = "#FEF3E2"
-DANGER = "#B91C1C"           # 오류
-CONFIRMED = "#15803D"        # 확인됨
+    "ATTENTION": "#B45309",      # 확인 필요
+    "ATTENTION_SOFT": "#FEF3E2",
+    "DANGER": "#B91C1C",         # 오류
+    "DANGER_SOFT": "#FDECEC",
+    "CONFIRMED": "#15803D",      # 확인됨
+    "CONFIRMED_SOFT": "#E9F6EE",
 
-# 연간 패턴 격자의 막대. 상태를 색만으로 구분하지 않도록 막대 안에 기호를
-# 함께 찍는다(PRD §18.4). 색은 "얼마나 단단한 근거인가"의 농도를 나타낸다.
-CYCLE_STRONG = PRIMARY       # 담당자가 확인함
-CYCLE_SOFT = "#A7C1DB"       # 자료에서 추정
-CYCLE_WEAK = "#DFE6EE"       # 자료가 부족
+    # 연간 패턴 격자의 막대. 상태를 색만으로 구분하지 않도록 막대 안에 기호를
+    # 함께 찍는다(PRD §18.4). 색은 "얼마나 단단한 근거인가"의 농도를 나타낸다.
+    "CYCLE_STRONG": "#1B5FA8",   # 담당자가 확인함
+    "CYCLE_SOFT": "#A7C1DB",     # 자료에서 추정
+    "CYCLE_WEAK": "#DFE6EE",     # 자료가 부족
+}
+
+# 어두운 벌. 밝은 벌을 그대로 뒤집지 않는다 — 순수한 검정 바탕에 순백 글자는
+# 대비가 지나쳐 잔상이 남는다. 바탕은 짙은 회청색, 글자는 살짝 낮춘 흰색으로
+# 두고, 강조색은 어두운 바탕 위에서 대비가 서도록 한 단계 밝힌다.
+DARK = {
+    "BG": "#1B1E24",
+    "SURFACE": "#22262D",
+    "SURFACE_ALT": "#2B3038",
+    "BORDER": "#2F343C",
+    "BORDER_STRONG": "#434A54",
+
+    "CANVAS": "#14171C",
+    "BAND": "#1F232A",
+
+    "NAV_BG": "#171A20",
+    "NAV_HOVER": "#252A32",
+
+    "TEXT": "#E6E9EE",
+    "TEXT_MUTED": "#A2ABB6",
+    "TEXT_DISABLED": "#6C7681",
+    "TEXT_SUBTLE": "#8A94A0",
+    "TEXT_ON_PRIMARY": "#0F1216",
+
+    "PRIMARY": "#6BA6E4",
+    "PRIMARY_HOVER": "#8CBCEE",
+    "PRIMARY_SOFT": "#1E2C3B",
+
+    "ATTENTION": "#E0A45C",
+    "ATTENTION_SOFT": "#33291B",
+    "DANGER": "#E97C7C",
+    "DANGER_SOFT": "#331E1E",
+    "CONFIRMED": "#69BE83",
+    "CONFIRMED_SOFT": "#1B2E22",
+
+    "CYCLE_STRONG": "#3E7FBE",
+    "CYCLE_SOFT": "#31506F",
+    "CYCLE_WEAK": "#2B3038",
+}
+
+# 정적 분석기와 예전 호출부를 위해 밝은 벌의 값을 모듈 전역으로 펼쳐 둔다.
+# apply_mode()가 여기를 덮어쓴다.
+globals().update(LIGHT)
+
+BG: str
+SURFACE: str
+SURFACE_ALT: str
+BORDER: str
+BORDER_STRONG: str
+CANVAS: str
+BAND: str
+NAV_BG: str
+NAV_HOVER: str
+TEXT: str
+TEXT_MUTED: str
+TEXT_DISABLED: str
+TEXT_SUBTLE: str
+TEXT_ON_PRIMARY: str
+PRIMARY: str
+PRIMARY_HOVER: str
+PRIMARY_SOFT: str
+ATTENTION: str
+ATTENTION_SOFT: str
+DANGER: str
+DANGER_SOFT: str
+CONFIRMED: str
+CONFIRMED_SOFT: str
+CYCLE_STRONG: str
+CYCLE_SOFT: str
+CYCLE_WEAK: str
+
+_mode = "light"          # 지금 칠해져 있는 벌 (light | dark)
+
+
+# ── 테마 모드 ───────────────────────────────────────────────────────
+# 저장값은 셋뿐이다. system은 "지금 OS가 뭘 쓰는가"를 따라간다 — 사용자가
+# 저녁에 OS를 어둡게 바꾸면 이 앱도 같이 어두워져야 한다.
+THEME_MODES = ("system", "light", "dark")
+THEME_LABELS = {"system": "시스템", "light": "밝게", "dark": "어둡게"}
+THEME_ICONS = {"system": "theme-system", "light": "theme-light", "dark": "theme-dark"}
+THEME_HINTS = {
+    "system": "윈도우 설정을 따라갑니다",
+    "light": "밝은 배경에 어두운 글자",
+    "dark": "어두운 배경에 밝은 글자",
+}
+
+
+def normalize_mode(value: str | None) -> str:
+    return value if value in THEME_MODES else "system"
+
+
+def resolve_mode(mode: str) -> str:
+    """system을 실제로 칠할 벌(light|dark)로 바꾼다.
+
+    Qt 6.5부터 styleHints().colorScheme()이 OS 설정을 알려준다. 그보다 낮은
+    환경에서는 알 길이 없으므로 밝은 벌로 물러선다 — 어둡게가 필요하면
+    사용자가 직접 고르면 된다.
+    """
+    mode = normalize_mode(mode)
+    if mode != "system":
+        return mode
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QGuiApplication
+
+        app = QGuiApplication.instance()
+        if app is not None:
+            scheme = app.styleHints().colorScheme()
+            if scheme == Qt.ColorScheme.Dark:
+                return "dark"
+    except (ImportError, AttributeError):  # pragma: no cover — 옛 Qt 방어
+        pass
+    return "light"
+
+
+def apply_mode(mode: str) -> str:
+    """색 이름이 가리키는 값을 갈아 끼운다. 실제로 칠한 벌을 돌려준다."""
+    global _mode
+    resolved = resolve_mode(mode)
+    globals().update(DARK if resolved == "dark" else LIGHT)
+    _mode = resolved
+    return resolved
+
+
+def current_mode() -> str:
+    return _mode
+
+
+def color(name: str) -> str:
+    """지금 칠해져 있는 벌에서 색 하나를 꺼낸다.
+
+    표(어떤 상태 → 어떤 색)를 모듈 수준에 두어야 할 때 값 대신 이 함수로
+    미룬다. 값을 미리 담아 두면 테마를 바꿔도 그 표만 옛 색으로 남는다.
+    """
+    return globals().get(name, globals()["TEXT"])
+
 
 # ── 타이포 ──────────────────────────────────────────────────────────
 FONT_FAMILY = '"Pretendard", "Malgun Gothic", "맑은 고딕", sans-serif'
@@ -53,6 +205,19 @@ FS_SECTION = 16
 FS_BODY = 14
 FS_SMALL = 12
 LINE_HEIGHT = 1.6            # 한글은 1.5 이하면 답답하다
+
+# 글자 크기 3단계. 소·중·대이며 저장값은 이 키다.
+# 큰 쪽을 1.2로 둔 근거는 PRD §18.4(저시력 지원)이고, 작은 쪽은 그 대칭이
+# 아니라 0.9까지만 내린다 — 그 아래는 한글 자소가 뭉개져 오히려 안 읽힌다.
+TEXT_SIZES = {"small": 0.9, "medium": 1.0, "large": 1.2}
+TEXT_SIZE_ORDER = ("small", "medium", "large")
+TEXT_SIZE_LABELS = {"small": "작게", "medium": "보통", "large": "크게"}
+TEXT_SIZE_ICONS = {"small": "text-small", "medium": "text-medium", "large": "text-large"}
+
+
+def normalize_text_size(value: str | None) -> str:
+    return value if value in TEXT_SIZES else "medium"
+
 
 # ── 간격·크기 (4px 그리드) ──────────────────────────────────────────
 SP_XS, SP_SM, SP_MD, SP_LG, SP_XL = 4, 8, 12, 16, 24
@@ -72,15 +237,30 @@ GRID_CELL_W = 46
 GRID_ROW_H = 34
 GRID_BAR_H = 22              # 막대 높이. 줄 높이보다 낮아야 행이 분리되어 보인다.
 
+# 설정 창 왼쪽 갈래 목록
+SETTINGS_NAV_W = 168
 
-def stylesheet(large_text: bool = False) -> str:
-    """large_text=True면 본문 글자를 약 20% 키운다 (PRD §18.4 접근성).
 
-    별도 '고대비 테마'를 두지 않는 이유: 이미 상태를 색상 하나로 구분하지
-    않고 기호+글자를 함께 쓰도록 설계했다(Badge, EvidenceChip 등). 그래서
-    저시력 사용자에게 가장 먼저 도움이 되는 것은 대비 반전보다 글자 크기다.
+def apply(app, text_size: str = "medium", mode: str = "system") -> str:
+    """앱 전체에 테마를 적용한다. 실제로 칠한 벌(light|dark)을 돌려준다.
+
+    색 교체와 스타일시트 재적용은 항상 붙어 다녀야 한다 — 한쪽만 하면
+    QSS는 어두운데 위젯이 직접 칠한 색은 밝은, 반쪽짜리 화면이 나온다.
     """
-    scale = 1.2 if large_text else 1.0
+    resolved = apply_mode(mode)
+    app.setStyleSheet(stylesheet(text_size))
+    return resolved
+
+
+def stylesheet(text_size: str = "medium") -> str:
+    """지금 칠해져 있는 색 벌로 전역 스타일시트를 짓는다.
+
+    글자 크기는 소·중·대 3단계다(PRD §18.4 접근성). 별도 '고대비 테마'를
+    두지 않는 이유: 이미 상태를 색상 하나로 구분하지 않고 기호+글자를 함께
+    쓰도록 설계했다(Badge, EvidenceChip 등). 그래서 저시력 사용자에게 가장
+    먼저 도움이 되는 것은 대비 반전보다 글자 크기다.
+    """
+    scale = TEXT_SIZES[normalize_text_size(text_size)]
     body = round(FS_BODY * scale)
     small = round(FS_SMALL * scale)
     section = round(FS_SECTION * scale)
@@ -91,7 +271,7 @@ def stylesheet(large_text: bool = False) -> str:
         font-size: {body}px;
         color: {TEXT};
     }}
-    QMainWindow, QWidget#Content {{ background: {BG}; }}
+    QMainWindow, QWidget#Content, QDialog {{ background: {BG}; }}
 
     /* ── 상단 바 ── */
     QWidget#TopBar {{
@@ -134,26 +314,34 @@ def stylesheet(large_text: bool = False) -> str:
         border-radius: {RADIUS}px;
         padding: 0;
         text-align: left;
-        min-height: 44px;
+        min-height: 58px;
     }}
     QPushButton#NavItem:hover {{ background: {NAV_HOVER}; }}
     QPushButton#NavItem:checked {{
         background: {BG};
         border-left: 3px solid {PRIMARY};
     }}
-    QLabel#NavIcon {{ font-size: {section}px; color: {TEXT_MUTED}; }}
-    QLabel#NavTitle {{ color: {TEXT}; font-weight: 600; }}
-    QLabel#NavHint {{ color: {TEXT_MUTED}; font-size: {small}px; }}
-    QPushButton#NavItem:checked QLabel#NavTitle {{ color: {PRIMARY}; font-weight: 700; }}
-    QPushButton#NavItem:checked QLabel#NavIcon {{ color: {PRIMARY}; }}
+    /* 이름과 설명은 층이 다르다. 크기(15/12)·무게(700/400)·색(본문/부기)
+       세 가지를 한꺼번에 벌려야 두 줄이 한 문장으로 뭉치지 않는다. */
+    QLabel#NavTitle {{
+        color: {TEXT};
+        font-size: {round(body * 1.08)}px;
+        font-weight: 700;
+    }}
+    QLabel#NavHint {{
+        color: {TEXT_SUBTLE};
+        font-size: {small}px;
+        font-weight: 400;
+    }}
+    QPushButton#NavItem:checked QLabel#NavTitle {{ color: {PRIMARY}; }}
+    QPushButton#NavItem:checked QLabel#NavHint {{ color: {TEXT_MUTED}; }}
     QPushButton#NavItem:disabled QLabel#NavTitle,
-    QPushButton#NavItem:disabled QLabel#NavHint,
-    QPushButton#NavItem:disabled QLabel#NavIcon {{ color: {TEXT_DISABLED}; }}
+    QPushButton#NavItem:disabled QLabel#NavHint {{ color: {TEXT_DISABLED}; }}
     QLabel#NavSection {{
         color: {TEXT_DISABLED};
         font-size: {small}px;
         font-weight: 700;
-        padding: {SP_SM}px {SP_MD}px {SP_XS}px {SP_MD}px;
+        padding: {SP_SM}px {SP_MD}px {SP_SM}px {SP_MD}px;
     }}
 
     /* 원본을 건드리지 않는다는 약속. 흐린 한 줄로 흘리면 읽히지 않는다. */
@@ -226,9 +414,34 @@ def stylesheet(large_text: bool = False) -> str:
         font-weight: 700;
     }}
     /* 화면이 내놓는 답 한 줄. 근거·부연과 같은 크기로 두면 답이 묻힌다. */
-    QLabel#Answer {{ font-size: {section}px; font-weight: 600; color: {TEXT}; }}
+    QLabel#Answer {{ font-size: {section}px; font-weight: 700; color: {TEXT}; }}
     QLabel#Muted {{ color: {TEXT_MUTED}; }}
     QLabel#Small {{ color: {TEXT_MUTED}; font-size: {small}px; }}
+    QLabel#Mono {{ font-family: "Consolas", "D2Coding", monospace; color: {TEXT_MUTED}; }}
+
+    /* 덩어리 하나에 붙이는 작은 머리말("이렇게 판단한 근거"). 제목만큼
+       크면 구획이 또 갈라지고, 본문과 같으면 머리말인 줄 모른다. */
+    QLabel#BlockLabel {{
+        color: {TEXT_MUTED};
+        font-size: {small}px;
+        font-weight: 700;
+        padding-top: {SP_XS}px;
+    }}
+    /* 규모·시점처럼 "몇 건, 몇 년치"를 말하는 중립 조각. */
+    QLabel#MetaChip {{
+        background: {SURFACE_ALT};
+        color: {TEXT_MUTED};
+        border-radius: {RADIUS_SM}px;
+        padding: 2px {SP_SM}px;
+        font-size: {small}px;
+        font-weight: 600;
+    }}
+    /* 조작 구역. 본문에 그냥 섞어 두면 버튼이 내용처럼 보인다. */
+    QFrame#ActionBar {{
+        background: transparent;
+        border: none;
+        border-top: 1px solid {BORDER};
+    }}
 
     /* 설명 문구는 내용이 아니다. 같은 회색 글씨로 흘려 두면 목록 항목과
        섞여 읽히므로, 옅은 판에 얹어 "이건 안내"라고 표시한다. */
@@ -237,6 +450,34 @@ def stylesheet(large_text: bool = False) -> str:
         border-radius: {RADIUS_SM}px;
         padding: {SP_SM}px {SP_MD}px;
         color: {TEXT_MUTED};
+        font-size: {small}px;
+    }}
+
+    /* ── 접어 둔 설명 ──
+       ⓘ는 눈에 걸리되 내용을 가리지 않아야 한다. 평소엔 옅은 회색 원,
+       마우스를 올리면 강조색으로 켜져 "이건 눌러/올려 볼 것"임을 말한다. */
+    QLabel#InfoDot {{
+        background: {SURFACE_ALT};
+        color: {TEXT_MUTED};
+        border: 1px solid {BORDER_STRONG};
+        border-radius: 8px;
+        font-size: {small}px;
+        font-weight: 700;
+        font-style: italic;
+    }}
+    QLabel#InfoDot:hover {{
+        background: {PRIMARY_SOFT};
+        border-color: {PRIMARY};
+        color: {PRIMARY};
+    }}
+    /* 팝업 레이어. 기본 툴팁은 얇은 시스템 상자라 본문 위에 떠도 읽히지
+       않는다. 카드와 같은 언어(흰 판·테두리·여백)로 그린다. */
+    QToolTip {{
+        background: {BG};
+        color: {TEXT};
+        border: 1px solid {BORDER_STRONG};
+        border-radius: {RADIUS_SM}px;
+        padding: {SP_SM}px {SP_MD}px;
         font-size: {small}px;
     }}
 
@@ -261,6 +502,13 @@ def stylesheet(large_text: bool = False) -> str:
         border-radius: {RADIUS}px;
     }}
     QFrame#CardPrimary:hover {{ border-color: {PRIMARY}; }}
+    /* 설정 창의 카드는 목록이 아니라 설명 판이다. 마우스만 스쳐도 테두리가
+       파래지면 "눌러야 하나?" 싶어진다 — 조용히 둔다. */
+    QFrame#CardStatic {{
+        background: {BG};
+        border: 1px solid {BORDER_STRONG};
+        border-radius: {RADIUS}px;
+    }}
 
     /* 카드 제목. 누를 수 있지만 파란 링크로 두면 본문과 위계가 뒤집힌다. */
     QPushButton#CardTitle {{
@@ -412,6 +660,8 @@ def stylesheet(large_text: bool = False) -> str:
         color: {PRIMARY};
     }}
     QPushButton#IconButton:disabled {{ color: {BORDER}; border-color: {BORDER}; }}
+    /* 화살표가 글자를 밀어내면 ⋯이 사라진다 — 무엇을 누르는지 알 수 없다. */
+    QPushButton#IconButton::menu-indicator {{ image: none; width: 0; }}
 
     QFrame#Divider {{ background: {BORDER}; max-height: 1px; border: none; }}
 
@@ -438,6 +688,13 @@ def stylesheet(large_text: bool = False) -> str:
         text-align: left;
     }}
     QPushButton#Link:hover {{ text-decoration: underline; }}
+    /* 지우는 버튼. 파란 버튼과 같은 모양이면 손이 먼저 가고 눈이 나중에 온다. */
+    QPushButton#Destructive {{
+        background: {BG};
+        border: 1px solid {BORDER_STRONG};
+        color: {DANGER};
+    }}
+    QPushButton#Destructive:hover {{ background: {DANGER_SOFT}; border-color: {DANGER}; }}
 
     /* 확인 동작. 파란 덩어리를 여섯 줄에 늘어놓으면 화면이 버튼밭이 되므로
        테두리만 강조색으로 두고, 옆 동작은 조용한 버튼으로 내린다. */
@@ -457,6 +714,75 @@ def stylesheet(large_text: bool = False) -> str:
     }}
     QPushButton#Quiet:hover {{ background: {SURFACE_ALT}; color: {TEXT}; }}
 
+    /* ── 설정 창 ──
+       왼쪽은 갈래(무엇을 설정하나), 오른쪽은 그 갈래의 내용. 예전처럼 한
+       기둥에 다섯 덩어리를 쌓으면 "화면 설정"과 "감사 로그"가 같은 무게로
+       보여, 매일 쓰는 것과 일 년에 한 번 보는 것이 구분되지 않는다. */
+    QWidget#SettingsNav {{
+        background: {NAV_BG};
+        border-right: 1px solid {BORDER_STRONG};
+    }}
+    QPushButton#SettingsNavItem {{
+        background: transparent;
+        border: none;
+        border-left: 3px solid transparent;
+        border-radius: {RADIUS_SM}px;
+        padding: {SP_MD}px {SP_MD}px;
+        text-align: left;
+        color: {TEXT_MUTED};
+        font-weight: 600;
+    }}
+    QPushButton#SettingsNavItem:hover {{ background: {NAV_HOVER}; color: {TEXT}; }}
+    QPushButton#SettingsNavItem:checked {{
+        background: {BG};
+        border-left: 3px solid {PRIMARY};
+        color: {PRIMARY};
+        font-weight: 700;
+    }}
+    QWidget#SettingsBody {{ background: {CANVAS}; }}
+    QScrollArea#SettingsScroll {{ background: {CANVAS}; border: none; }}
+    QScrollArea#SettingsScroll::viewport {{ background: {CANVAS}; }}
+    QWidget#SettingsPane {{ background: {CANVAS}; }}
+    QFrame#SettingsFooter {{
+        background: {BG};
+        border: none;
+        border-top: 1px solid {BORDER};
+    }}
+    QLabel#SettingsHeading {{ font-size: {title}px; font-weight: 700; }}
+    QLabel#SettingsLead {{ color: {TEXT_MUTED}; font-size: {small}px; }}
+    /* 설정 항목 하나의 이름. 카드 제목(SectionTitle)보다 한 단계 작다 —
+       카드 안에 항목이 둘 이상 들어가므로 위계가 한 층 더 필요하다. */
+    QLabel#FieldLabel {{ font-weight: 700; }}
+    QLabel#FieldHint {{ color: {TEXT_MUTED}; font-size: {small}px; }}
+
+    /* ── 아이콘 선택 묶음 (글자 크기·테마) ──
+       글로 "밝게/어둡게/시스템"이라고 늘어놓으면 셋 다 같은 회색 글자라
+       고르기 전에 읽어야 한다. 그림이 먼저 뜻을 말하고 글자는 확인용으로
+       아래에 작게 붙인다. 고른 칸은 강조색 테두리 + 옅은 판으로, 색을
+       못 보는 사람에게도 테두리 굵기 차이로 남는다. */
+    QWidget#ChoiceGroup {{ background: transparent; }}
+    /* QPushButton은 제 글자를 기준으로 크기를 잡는다 — 안에 레이아웃을 넣어도
+       그 사실은 변하지 않아, 최소 높이를 주지 않으면 그림과 글자가 겹친다.
+       사이드바 NavItem이 같은 이유로 min-height를 갖고 있다. */
+    QPushButton#ChoiceItem {{
+        background: {SURFACE};
+        border: 1px solid {BORDER_STRONG};
+        border-radius: {RADIUS}px;
+        padding: 0;
+        min-width: 88px;
+        min-height: {round(72 * scale)}px;
+    }}
+    QPushButton#ChoiceItem:hover {{ background: {SURFACE_ALT}; border-color: {PRIMARY}; }}
+    QPushButton#ChoiceItem:checked {{
+        background: {PRIMARY_SOFT};
+        border: 2px solid {PRIMARY};
+    }}
+    QLabel#ChoiceCaption {{ color: {TEXT_MUTED}; font-size: {small}px; font-weight: 600; }}
+    QPushButton#ChoiceItem:checked QLabel#ChoiceCaption {{
+        color: {PRIMARY};
+        font-weight: 700;
+    }}
+
     QLineEdit, QComboBox {{
         background: {BG};
         border: 1px solid {BORDER_STRONG};
@@ -466,6 +792,13 @@ def stylesheet(large_text: bool = False) -> str:
         selection-color: {TEXT};
     }}
     QLineEdit:focus, QComboBox:focus {{ border-color: {PRIMARY}; }}
+    QComboBox QAbstractItemView {{
+        background: {BG};
+        border: 1px solid {BORDER_STRONG};
+        selection-background-color: {PRIMARY_SOFT};
+        selection-color: {TEXT};
+    }}
+    QCheckBox {{ spacing: {SP_SM}px; }}
 
     QTreeView, QTableView, QListView {{
         background: {BG};
@@ -495,6 +828,9 @@ def stylesheet(large_text: bool = False) -> str:
     /* 본문 바탕을 한 단계 낮춘 화면(일정). ID 선택자라 위의 일반 규칙을
        이긴다 — 뷰포트까지 지정하지 않으면 스크롤할 때 흰 띠가 남는다. */
     QWidget#Canvas, QWidget#PageBody {{ background: {CANVAS}; }}
+    /* 본문 기둥은 판이 아니라 폭 제한용 그릇이다. 위의 일반 규칙
+       (QScrollArea > QWidget > QWidget)이 흰색을 칠하지 못하게 막는다. */
+    QWidget#PageColumn {{ background: transparent; }}
     QScrollArea#PageScroll {{ background: {CANVAS}; }}
     QScrollArea#PageScroll::viewport {{ background: {CANVAS}; }}
     QScrollBar:vertical {{
@@ -514,9 +850,9 @@ def stylesheet(large_text: bool = False) -> str:
         font-size: {small}px;
     }}
     QLabel#BadgeNeutral   {{ background: {SURFACE_ALT}; color: {TEXT_MUTED}; }}
-    QLabel#BadgeAttention {{ background: #FEF3E2; color: {ATTENTION}; }}
-    QLabel#BadgeDanger    {{ background: #FDECEC; color: {DANGER}; }}
-    QLabel#BadgeOk        {{ background: #E9F6EE; color: {CONFIRMED}; }}
+    QLabel#BadgeAttention {{ background: {ATTENTION_SOFT}; color: {ATTENTION}; }}
+    QLabel#BadgeDanger    {{ background: {DANGER_SOFT}; color: {DANGER}; }}
+    QLabel#BadgeOk        {{ background: {CONFIRMED_SOFT}; color: {CONFIRMED}; }}
 
     /* ── 확인되지 않은 구간 (UnknownBlock) ── */
     QFrame#UnknownBlock {{

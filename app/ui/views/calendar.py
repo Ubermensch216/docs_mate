@@ -29,14 +29,12 @@ from datetime import date
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -50,12 +48,14 @@ from ..widgets import (
     Badge,
     Card,
     EmptyState,
+    InfoDot,
     ListRow,
+    Page,
     SubPanel,
+    TabBar,
     UnknownBlock,
-    clear_layout,
+    hint_row,
     muted_label,
-    note_label,
     open_original,
     view_title,
 )
@@ -96,78 +96,6 @@ class Upcoming:
         return self.row["task_name"]
 
 
-class TabBar(QWidget):
-    """화면 안 탭. 사이드바 메뉴와 헷갈리지 않도록 밑줄 형태로 만든다."""
-
-    switched = Signal(str)
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("TabBar")
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(theme.SP_XS)
-
-        self._group = QButtonGroup(self)
-        self._group.setExclusive(True)
-        self._buttons: dict[str, QPushButton] = {}
-
-        for key, label in TABS:
-            button = QPushButton(label)
-            button.setObjectName("Tab")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.clicked.connect(lambda _=False, k=key: self.switched.emit(k))
-            self._group.addButton(button)
-            row.addWidget(button)
-            self._buttons[key] = button
-        row.addStretch(1)
-
-    def set_count(self, key: str, label: str, count: int | None) -> None:
-        """탭 이름에 건수를 단다. 누르기 전에 규모를 알 수 있어야 한다."""
-        button = self._buttons[key]
-        button.setText(label if not count else f"{label}  {count}")
-
-    def select(self, key: str) -> None:
-        self._buttons[key].setChecked(True)
-
-
-class Page(QWidget):
-    """탭 하나의 내용. 각자 스크롤한다 — 탭을 바꿔도 남의 스크롤이 따라오지 않는다.
-
-    바탕은 흰색이 아니라 한 단계 낮춘 회색이다. 흰 종이 위에 흰 카드를
-    올리면 카드가 카드로 보이지 않는다 — 이 화면의 시인성 문제 절반이
-    거기서 왔다.
-    """
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setObjectName("PageScroll")
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-
-        body = QWidget()
-        body.setObjectName("PageBody")
-        body.setAutoFillBackground(True)
-        self.column = QVBoxLayout(body)
-        self.column.setContentsMargins(
-            theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_XL
-        )
-        self.column.setSpacing(theme.SP_MD)
-        self.column.setAlignment(Qt.AlignmentFlag.AlignTop)
-        scroll.setWidget(body)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-
-    def reset(self) -> QVBoxLayout:
-        clear_layout(self.column)
-        return self.column
-
-
 class CalendarView(QWidget):
     go_documents = Signal()
     open_task = Signal(int)
@@ -193,16 +121,29 @@ class CalendarView(QWidget):
         head_column.setContentsMargins(theme.SP_XL, theme.SP_XL, theme.SP_XL, 0)
         head_column.setSpacing(theme.SP_SM)
 
-        # 정체성 문구는 탭 위에 상주한다. 어느 탭에 있든 "이건 내가 입력한
-        # 달력이 아니다"라는 사실이 화면에서 사라지면 안 된다.
-        head_column.addWidget(view_title("자료에서 발견한 업무 일정"))
-        self.lead = muted_label(
-            "전임자 자료에 남은 시기를 읽어 추정한 일정입니다. "
-            "직접 입력한 달력이 아니므로, 확인하고 고칠 수 있습니다."
+        # 여기만 ⓘ로 접지 않는다. "직접 입력한 달력이 아니다"는 화면 설명이
+        # 아니라 이 제품의 정체성이고, 어느 탭에 있든 보여야 한다(계획서 §12).
+        # 접히면 사용자는 자기가 만든 일정표로 오해한 채로 쓰게 된다.
+        # 대신 한 줄로 줄이고, 나머지 사연은 ⓘ로 넘긴다.
+        title_row = QHBoxLayout()
+        title_row.setSpacing(theme.SP_SM)
+        title_row.addWidget(view_title("자료에서 발견한 업무 일정"))
+        title_row.addWidget(
+            InfoDot(
+                "전임자 자료에 남은 시기를 읽어 추정한 일정입니다. 달마다 어떤 "
+                "문서가 있었는지를 세로로 겹쳐 보고 반복을 찾습니다. 확인하고 "
+                "고칠 수 있으며, 확인한 것은 다시 분석해도 바뀌지 않습니다."
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
         )
+        title_row.addStretch(1)
+        head_column.addLayout(title_row)
+
+        self.lead = muted_label("직접 입력한 달력이 아니라, 자료에서 읽어 낸 추정입니다.")
         head_column.addWidget(self.lead)
 
-        self.tabs = TabBar()
+        self.tabs = TabBar(TABS)
         self.tabs.switched.connect(self._switch)
         head_column.addSpacing(theme.SP_SM)
         head_column.addWidget(self.tabs)
@@ -299,10 +240,12 @@ class CalendarView(QWidget):
     # ── 연간 패턴 ──────────────────────────────────────────────────
     def _render_year(self, column: QVBoxLayout, cycles: list, today: date) -> None:
         column.addWidget(
-            note_label(
-                f"{today.year}년 · 가로 한 줄이 업무 하나입니다. 막대가 그 업무를 "
-                f"하는 달이고, 이번 달({today.month}월)은 세로로 표시됩니다. "
-                f"업무 이름을 누르면 상세로 갑니다."
+            hint_row(
+                f"{today.year}년",
+                f"가로 한 줄이 업무 하나입니다. 막대가 그 업무를 하는 달이고, "
+                f"이번 달({today.month}월)은 세로로 표시됩니다. "
+                f"업무 이름을 누르면 상세로 갑니다.",
+                strong=True,
             )
         )
 
@@ -365,7 +308,10 @@ class CalendarView(QWidget):
             return
 
         column.addWidget(
-            note_label(f"앞으로 {SOON_DAYS}일 안에 시작되거나 지금 진행 중인 업무입니다.")
+            hint_row(
+                f"{len(now)}건",
+                f"앞으로 {SOON_DAYS}일 안에 시작되거나 지금 진행 중인 업무입니다.",
+            )
         )
         for entry in now:
             column.addWidget(self._now_card(entry, today))
@@ -451,7 +397,9 @@ class CalendarView(QWidget):
             )
             return
 
-        column.addWidget(note_label("가까운 순서입니다. 업무 이름을 누르면 상세로 갑니다."))
+        column.addWidget(
+            hint_row("가까운 순서", "업무 이름을 누르면 그 업무의 상세로 갑니다.")
+        )
         for entry in later[:MAX_UPCOMING]:
             line = ListRow()
             line.setMaximumWidth(theme.CONTENT_MAX_W)
@@ -503,9 +451,10 @@ class CalendarView(QWidget):
             key=lambda c: (status.of_cycle(c) != status.WEAK, c["years_observed"]),
         )
         column.addWidget(
-            note_label(
+            hint_row(
+                "근거가 약한 것부터",
                 "맞다고 확인해 두면 다시 분석해도 바뀌지 않고, 다음 담당자에게 "
-                "그대로 전달됩니다. 근거가 약한 것부터 보여 줍니다."
+                "그대로 전달됩니다.",
             )
         )
 
@@ -714,10 +663,12 @@ def _grid_header(current_month: int) -> QFrame:
 
 
 # 막대 색. 상태를 색만으로 구분하지 않도록 막대 안에 기호를 함께 찍는다.
+# 값이 아니라 색 이름을 담는다 — 테마를 바꿔도 이 표만 옛 색으로 남지 않도록
+# theme.color()로 꺼내 쓴다.
 _BAR = {
-    status.CONFIRMED: (theme.CYCLE_STRONG, theme.TEXT_ON_PRIMARY),
-    status.INFERRED: (theme.CYCLE_SOFT, theme.TEXT),
-    status.WEAK: (theme.CYCLE_WEAK, theme.TEXT_MUTED),
+    status.CONFIRMED: ("CYCLE_STRONG", "TEXT_ON_PRIMARY"),
+    status.INFERRED: ("CYCLE_SOFT", "TEXT"),
+    status.WEAK: ("CYCLE_WEAK", "TEXT_MUTED"),
 }
 
 
@@ -753,7 +704,8 @@ def _bar(months: list[bool], month: int, state: str) -> QLabel:
         bar.setStyleSheet(f"color: {theme.TEXT_DISABLED}; background: transparent;")
         return bar
 
-    fill, ink = _BAR.get(state, _BAR[status.WEAK])
+    fill_token, ink_token = _BAR.get(state, _BAR[status.WEAK])
+    fill, ink = theme.color(fill_token), theme.color(ink_token)
     starts = month == 1 or not months[month - 2]
     ends = month == 12 or not months[month]
     radius = theme.GRID_BAR_H // 2
