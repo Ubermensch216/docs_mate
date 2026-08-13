@@ -28,6 +28,7 @@ class FakeClient:
         gen_response: dict | None = None,
         embed_error: str | None = None,
         gen_error: str | None = None,
+        gen_raw: str | None = None,
     ):
         self.embed_model = "bge-m3"
         self.gen_model = "gemma4:e2b"
@@ -36,6 +37,7 @@ class FakeClient:
         self._gen_response = gen_response
         self._embed_error = embed_error
         self._gen_error = gen_error
+        self._gen_raw = gen_raw
 
     def health(self) -> Health:
         return Health(
@@ -50,8 +52,8 @@ class FakeClient:
 
     def generate_json(self, prompt: str, schema: dict, num_predict: int = 400, temperature: float = 0.0):
         if self._gen_error:
-            return None, self._gen_error
-        return self._gen_response, None
+            return None, self._gen_error, self._gen_raw or ""
+        return self._gen_response, None, self._gen_raw or ""
 
 
 @pytest.fixture
@@ -138,7 +140,7 @@ def test_withholds_when_model_says_not_answered(db: Database):
     source_id = db.add_source(r"D:\자료")
     _seed_chunk(db, source_id, "문서.hwp", "1문단", "본문 내용", [1.0, 0.0, 0.0], "a")
 
-    client = FakeClient(gen_response={"answered": False, "answer": "질문과 맞는 근거가 없습니다"})
+    client = FakeClient(gen_response={"answered": False, "sentences": []})
     answer = ask(db, "질문", client=client)
 
     assert answer.withheld
@@ -158,7 +160,7 @@ def test_empty_answer_text_is_treated_as_withheld(db: Database):
     source_id = db.add_source(r"D:\자료")
     _seed_chunk(db, source_id, "문서.hwp", "1문단", "본문", [1.0, 0.0, 0.0], "a")
 
-    client = FakeClient(gen_response={"answered": True, "answer": "   "})
+    client = FakeClient(gen_response={"answered": True, "sentences": []})
     answer = ask(db, "질문", client=client)
     assert answer.withheld
 
@@ -172,12 +174,14 @@ def test_successful_answer_carries_citations_for_every_context_chunk(db: Databas
 
     client = FakeClient(
         query_vector=[1.0, 0.0, 0.0],
-        gen_response={"answered": True, "answer": "수질 관련 자료 6건이 확인됩니다.[1]"},
+        gen_response={"answered": True, "sentences": [
+            {"text": "수질 관련 제출자료 내용을 확인했습니다", "sources": [1]},
+        ]},
     )
     answer = ask(db, "작년 수질 관련 뭐 냈어?", client=client)
 
     assert not answer.withheld
-    assert answer.text == "수질 관련 자료 6건이 확인됩니다.[1]"
+    assert answer.text == "수질 관련 제출자료 내용을 확인했습니다[1]"
     assert len(answer.citations) == 1
     assert answer.citations[0].filename == "행감자료.hwp"
     assert answer.citations[0].locator == "3쪽 2문단"
@@ -189,7 +193,9 @@ def test_answer_never_returned_without_at_least_one_citation(db: Database):
     source_id = db.add_source(r"D:\자료")
     _seed_chunk(db, source_id, "문서.hwp", "1문단", "내용", [1.0, 0.0, 0.0], "a")
 
-    client = FakeClient(gen_response={"answered": True, "answer": "답변입니다."})
+    client = FakeClient(gen_response={"answered": True, "sentences": [
+        {"text": "내용 확인", "sources": [1]},
+    ]})
     answer = ask(db, "질문", client=client)
     assert not answer.withheld
     assert len(answer.citations) >= 1
@@ -214,7 +220,9 @@ def test_ranking_prefers_closer_vectors(db: Database):
 
     client = FakeClient(
         query_vector=[1.0, 0.0, 0.0],
-        gen_response={"answered": True, "answer": "답[1][2]"},
+        gen_response={"answered": True, "sentences": [
+            {"text": "가까움 문서", "sources": [1]},
+        ]},
     )
     answer = ask(db, "질문", client=client)
     assert answer.citations[0].filename == "가까운문서.hwp"

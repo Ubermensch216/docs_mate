@@ -87,7 +87,9 @@ def test_exact_term_match_counts_as_strong_even_below_similarity_threshold(db: D
 
     client = FakeClient(
         query_vector=[1.0, 0.0, 0.0],
-        gen_response={"answered": True, "answer": "9월에 작성되었다[1]"},
+        gen_response={"answered": True, "sentences": [
+            {"text": "부서별자료요청 문서는 9월에 작성되었다", "sources": [1]},
+        ]},
     )
     answer = ask(db, "부서별자료요청 문서는 언제 작성됐어?", client=client)
 
@@ -145,7 +147,9 @@ def test_generic_token_buried_deep_in_fts_does_not_become_strong_evidence(db: Da
 
     client = FakeClient(
         query_vector=[1.0, 0.0, 0.0],   # 모든 조각과 직교 — 벡터로는 아무것도 못 건진다
-        gen_response={"answered": True, "answer": "2025년 행정사무감사 자료가 접수되었다[1]"},
+        gen_response={"answered": True, "sentences": [
+            {"text": "2025년 행정사무감사 제출자료 접수", "sources": [1]},
+        ]},
     )
     answer = ask(db, "2025년 행정사무감사 때 뭘 제출했어?", client=client)
 
@@ -166,7 +170,9 @@ def test_min_similarity_alone_still_qualifies_without_any_fts_hit(db: Database):
 
     client = FakeClient(
         query_vector=[1.0, 0.0, 0.0],
-        gen_response={"answered": True, "answer": "답변[1]"},
+        gen_response={"answered": True, "sentences": [
+            {"text": "내용 확인", "sources": [1]},
+        ]},
     )
     answer = ask(db, "질문", client=client)
     assert not answer.withheld

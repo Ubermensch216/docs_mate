@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -24,6 +26,7 @@ from ..db import Database, representative_predicate
 from . import fts
 from .query import QueryScope, infer_scope
 from .vector import normalize, unpack
+from .verify import VerifiedSentence, verify_sentences
 
 TOP_K = 8
 # 실측 기준값이 아니라 임시값이다. 실제 자료로 재조정이 필요하다(doc/00 §8.2 방식).
@@ -43,6 +46,10 @@ RRF_K = 60
 # (§1 측정 2). 완전 동일본은 대표본 판정으로 걸러지지만, 내용이 조금
 # 다른 버전은 hash가 달라 그 판정을 피한다 — 그래서 별도로 상한을 둔다.
 MAX_CHUNKS_PER_DOC = 2
+# 문장 배열 스키마는 플랫 문자열보다 JSON 구조 오버헤드(중괄호·키·배열)가
+# 크다. 500이던 옛 한도는 실측(R1)에서 답을 문장 중간에 잘랐다 — 짧은
+# 질문 하나가 완전한 답변 없이 "JSON 형식 오류"로 통째로 사라졌다.
+GEN_TOKEN_BUDGET = 900
 # 대표본·연도 필터·다양성 상한이 후보를 걸러낼 때, 이 깊이보다 아래까지
 # 내려가 빈 자리를 채우지 않는다. 실측으로 잡은 회귀: "작년 예산…" 질문에
 # 연도 필터가 2022~2024년의 더 좋은 예산 문서를 제외시키자, 우연히
@@ -152,7 +159,15 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
                        inferred_years=scope.years)
 
     prompt, _version = render("ask", context=_format_context(context_rows), question=question)
-    data, gen_error = client.generate_json(prompt, ASK_SCHEMA, num_predict=500)
+    data, gen_error, raw = client.generate_json(prompt, ASK_SCHEMA, num_predict=GEN_TOKEN_BUDGET)
+
+    if data is None and raw:
+        # 토큰 한도에 걸려 JSON이 중간에 잘렸을 수 있다 — 완성된 문장까지는
+        # 건진다. 통째로 버리면 "짧은 질문 하나가 이유 없이 실패"로 보인다.
+        salvaged = _salvage_ask_response(raw)
+        if salvaged is not None:
+            data, gen_error = salvaged, None
+
     if gen_error or data is None:
         return Answer(question=question, text="", withheld=True, error=gen_error or "응답 생성 실패",
                        inferred_years=scope.years)
@@ -168,21 +183,98 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
             inferred_years=scope.years,
         )
 
-    text = " ".join(str(data.get("answer") or "").split())
-    if not text:
-        return Answer(question=question, text="확인 가능한 자료가 부족합니다.", withheld=True,
-                       inferred_years=scope.years)
+    # 모델이 문장·근거를 스스로 짝지어 냈어도, 그 근거가 실제로 그 문장을
+    # 뒷받침하는지는 모델이 보장하지 않는다. 여기서 규칙으로 한 번 더
+    # 확인한다 — 근거 없는 문장은 화면에 올리지 않는다(§1 측정 1).
+    source_text = {
+        i + 1: " ".join(row["text"].split())[:MAX_CONTEXT_CHARS]
+        for i, row in enumerate(context_rows)
+    }
+    verified = verify_sentences(data.get("sentences") or [], source_text)
 
-    citations = [
-        Citation(index=i + 1, doc_id=r["doc_id"], filename=r["filename"],
-                 locator=r["locator"], path=r["path"])
-        for i, r in enumerate(context_rows)
-    ]
+    if not verified.survived:
+        related = [RelatedDoc(r["doc_id"], r["filename"], r["path"]) for r in context_rows[:3]]
+        return Answer(
+            question=question,
+            text="확인 가능한 자료가 부족합니다.",
+            withheld=True,
+            related_docs=_dedupe(related),
+            model=client.gen_model,
+            inferred_years=scope.years,
+        )
+
+    text, citations = _compose_answer(verified.kept, context_rows)
     return Answer(question=question, text=text, withheld=False, citations=citations,
                   model=client.gen_model, inferred_years=scope.years)
 
 
 # ── 내부 ────────────────────────────────────────────────────────────
+
+_ANSWERED = re.compile(r'"answered"\s*:\s*(true|false)')
+_SENTENCE = re.compile(
+    r'\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"sources"\s*:\s*\[([^\]]*)\]\s*\}'
+)
+
+
+def _salvage_ask_response(raw: str) -> dict | None:
+    """토큰 한도에 걸려 잘린 JSON에서 완성된 문장만 건진다.
+
+    Ollama의 format 강제로 파싱 실패는 드물지만, 문장 배열은 길어질수록
+    한도를 넘길 위험이 커진다. 정규식으로 완성된 {"text":…,"sources":[…]}
+    객체만 추려낸다 — 중간에 잘린 객체는 패턴에 안 맞아 자연히 빠진다.
+    """
+    answered_match = _ANSWERED.search(raw)
+    if not answered_match:
+        return None
+
+    sentences: list[dict] = []
+    for match in _SENTENCE.finditer(raw):
+        try:
+            text = json.loads(f'"{match.group(1)}"')
+        except json.JSONDecodeError:
+            continue
+        sources = [int(n) for n in re.findall(r"-?\d+", match.group(2))]
+        sentences.append({"text": text, "sources": sources})
+
+    if not sentences:
+        return None
+    return {"answered": answered_match.group(1) == "true", "sentences": sentences}
+
+
+def _compose_answer(
+    sentences: list[VerifiedSentence], context_rows: list,
+) -> tuple[str, list[Citation]]:
+    """검증에서 살아남은 문장으로 답변 본문과 근거 목록을 만든다.
+
+    원래 컨텍스트 번호([1]~[TOP_K])를 그대로 쓰지 않고, 실제로 쓰인 것만
+    등장 순서대로 [1][2][3]으로 다시 매긴다 — 검증에서 몇 문장이 버려지면
+    번호가 듬성듬성해지는데(예: [1][5][7]), 그대로 보여주면 "인용 전량
+    나열" 문제(§1 측정 1)의 변형이 된다. 실제로 근거가 된 것만, 깔끔한
+    번호로 보여준다.
+    """
+    by_index = {i + 1: row for i, row in enumerate(context_rows)}
+    citations: list[Citation] = []
+    renumbered: dict[int, int] = {}
+    parts: list[str] = []
+
+    for sentence in sentences:
+        marks: list[int] = []
+        for source in sentence.sources:
+            row = by_index.get(source)
+            if row is None:
+                continue
+            if source not in renumbered:
+                renumbered[source] = len(citations) + 1
+                citations.append(Citation(
+                    index=renumbered[source], doc_id=row["doc_id"],
+                    filename=row["filename"], locator=row["locator"], path=row["path"],
+                ))
+            marks.append(renumbered[source])
+        suffix = "".join(f"[{m}]" for m in sorted(set(marks)))
+        parts.append(f"{sentence.text}{suffix}" if suffix else sentence.text)
+
+    return " ".join(parts), citations
+
 
 def _reciprocal_rank_fusion(
     vector_ranked: list[tuple[int, float]], fts_ranked: list[int], k: int = RRF_K,

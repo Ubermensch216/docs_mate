@@ -59,11 +59,12 @@ def test_health_reports_failure_without_raising():
 
 
 def test_generate_returns_error_value_not_exception():
-    data, error = OllamaClient(base_url=DEAD).generate_json(
+    data, error, raw = OllamaClient(base_url=DEAD).generate_json(
         "안녕", schemas.SUMMARIZE_SCHEMA
     )
     assert data is None
     assert error
+    assert raw == ""
 
 
 def test_embed_returns_error_value_not_exception():

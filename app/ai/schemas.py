@@ -48,13 +48,30 @@ KEYWORDS_SCHEMA: dict[str, Any] = {
     "required": ["keywords"],
 }
 
+# v3(RAG 개선 R5) — 문장과 근거를 모델이 직접 짝지어 내놓게 강제한다.
+# 답변을 한 덩어리로 받으면 사후에 어느 문장이 어느 근거에서 나왔는지
+# 복원할 방법이 없다. search/verify.py가 문장마다 sources를 검증해
+# 근거 없는 문장을 규칙으로 걸러낸다.
 ASK_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "answered": {"type": "boolean"},
-        "answer": {"type": "string"},
+        "sentences": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                    },
+                },
+                "required": ["text", "sources"],
+            },
+        },
     },
-    "required": ["answered", "answer"],
+    "required": ["answered", "sentences"],
 }
 
 NAME_TASK_SCHEMA: dict[str, Any] = {

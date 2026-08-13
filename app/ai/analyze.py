@@ -48,7 +48,7 @@ def summarize(client: OllamaClient, doc_id: int, text: str) -> Analysis:
 
     prompt, version = render("summarize", document=body)
     result.prompt_version = version
-    data, error = client.generate_json(prompt, schemas.SUMMARIZE_SCHEMA, num_predict=220)
+    data, error, _raw = client.generate_json(prompt, schemas.SUMMARIZE_SCHEMA, num_predict=220)
     if error:
         result.error = error
         return result
@@ -76,7 +76,7 @@ def classify(
         "classify", categories=" / ".join(categories), document=body
     )
     result.prompt_version = version
-    data, error = client.generate_json(
+    data, error, _raw = client.generate_json(
         prompt, schemas.classify_schema(categories), num_predict=120
     )
     if error:
@@ -104,7 +104,7 @@ def keywords(client: OllamaClient, doc_id: int, text: str) -> Analysis:
 
     prompt, version = render("keywords", document=body)
     result.prompt_version = version
-    data, error = client.generate_json(prompt, schemas.KEYWORDS_SCHEMA, num_predict=120)
+    data, error, _raw = client.generate_json(prompt, schemas.KEYWORDS_SCHEMA, num_predict=120)
     if error:
         result.error = error
         return result
@@ -134,7 +134,7 @@ def name_task(client: OllamaClient, titles: list[str]) -> TaskNaming:
     listing = "\n".join(f"- {t}" for t in titles[:40])
     prompt, version = render("name_task", titles=listing)
     naming.prompt_version = version
-    data, error = client.generate_json(prompt, schemas.NAME_TASK_SCHEMA, num_predict=200)
+    data, error, _raw = client.generate_json(prompt, schemas.NAME_TASK_SCHEMA, num_predict=200)
     if error:
         naming.error = error
         return naming

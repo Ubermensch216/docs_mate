@@ -144,11 +144,14 @@ class OllamaClient:
         schema: dict[str, Any],
         num_predict: int = 400,
         temperature: float = 0.0,
-    ) -> tuple[dict | None, str | None]:
+    ) -> tuple[dict | None, str | None, str]:
         """JSON Schema를 강제해 구조화 응답을 받는다.
 
         Ollama의 format 파라미터가 문법을 강제하므로 파싱 실패는 드물다.
-        그래도 실패하면 (None, 사유)로 돌려 호출자가 검토함으로 보낼 수 있게 한다.
+        그래도 실패하면 (None, 사유, 원문)으로 돌려준다. 원문을 함께 주는
+        이유: 토큰 한도에 걸려 중간에 잘린 응답도 완성된 부분은 건질 수
+        있다 — 그 복구는 스키마마다 뜻이 다르므로 호출자(예: search/rag.py)
+        가 판단한다. 이 계층은 스키마를 모른다.
         """
         payload = {
             "model": self.gen_model,
@@ -165,21 +168,21 @@ class OllamaClient:
             response.raise_for_status()
             body = response.json()
         except httpx.TimeoutException:
-            return None, "모델 응답 시간 초과"
+            return None, "모델 응답 시간 초과", ""
         except httpx.ConnectError:
-            return None, "Ollama 연결 끊김"
+            return None, "Ollama 연결 끊김", ""
         except httpx.HTTPError as exc:
-            return None, f"모델 호출 실패: {exc}"
+            return None, f"모델 호출 실패: {exc}", ""
         except ValueError as exc:
-            return None, f"응답을 읽을 수 없음: {exc}"
+            return None, f"응답을 읽을 수 없음: {exc}", ""
 
         import json
 
         raw = body.get("response", "")
         try:
-            return json.loads(raw), None
+            return json.loads(raw), None, raw
         except json.JSONDecodeError as exc:
-            return None, f"JSON 형식 오류: {exc}"
+            return None, f"JSON 형식 오류: {exc}", raw
 
     # ── 임베딩 ──────────────────────────────────────────────────────
     def embed(self, texts: list[str]) -> tuple[list[list[float]] | None, str | None]:
