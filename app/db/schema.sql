@@ -252,6 +252,24 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
 
+-- 조각 단위 정확 일치 검색 (v3, 질문화면 RAG 개선 R3). document_fts는 문서
+-- 단위라 어느 조각이 일치했는지 알 수 없다 — RAG는 조각을 근거로 인용하므로
+-- 조각 단위 색인이 있어야 한다. document_fts와 같은 이유로 trigram을 쓴다.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+    text, content='chunks', content_rowid='id', tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunk_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunk_fts(chunk_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunk_fts(chunk_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    INSERT INTO chunk_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
 CREATE TABLE IF NOT EXISTS embeddings (
     chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
     model    TEXT NOT NULL,

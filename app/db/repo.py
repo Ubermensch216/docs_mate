@@ -13,6 +13,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..core.chunking import CHUNKING_VERSION
 from .migrations import SCHEMA_VERSION, add_column, upgrade
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -28,6 +29,21 @@ APP_DIR_NAME = "NunchiCoach"
 # 새 이름으로 갈아타면서 사용자가 자기 분석 결과를 잃는다. 새로 만들지는
 # 않되, 남아 있으면 그대로 이어 쓴다.
 LEGACY_APP_DIR_NAME = "WorkMemory"
+
+
+def representative_predicate(alias: str = "d") -> str:
+    """완전 중복본 중 대표 하나만 통과시키는 SQL 조각.
+
+    When·How·문서 화면·RAG가 전부 같은 기준을 써야 한다 — 화면마다 다른
+    문서를 대표로 고르면, 예를 들어 업무 상세에서는 A가 대표인데 질문
+    화면 근거에는 B가 나오는 식으로 사용자가 혼란스럽다. 네 곳에 각자
+    같은 문장을 박아 두던 것을 여기 하나로 모은다.
+    """
+    return (
+        f"({alias}.hash IS NULL OR {alias}.id = ("
+        f"SELECT MIN(x.id) FROM documents x "
+        f"WHERE x.hash = {alias}.hash AND x.missing_since IS NULL))"
+    )
 
 
 def default_project_dir() -> Path:
@@ -97,12 +113,39 @@ class Database:
             self.con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
             self._add_missing_columns()
             self.audit("schema.migrate", f"v{current} → v{new_version}")
-            return
+        else:
+            self.con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            self._add_missing_columns()
+            if current is None:
+                self.set_meta("schema_version", SCHEMA_VERSION)
 
-        self.con.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        self._add_missing_columns()
-        if current is None:
-            self.set_meta("schema_version", SCHEMA_VERSION)
+        # 두 경로 모두를 지나야 한다 — 스키마 승격 경로에서 빠뜨리면
+        # 옛 조각을 지울 기회를 영영 놓친다(이 코드가 나오기 전까지는
+        # 승격 경로가 여기서 그냥 return 해 버렸다).
+        self.sync_chunking_version()
+
+    def sync_chunking_version(self) -> bool:
+        """조각 규칙이 바뀌면 옛 조각을 지우고 다시 만들게 한다.
+
+        메타에 버전이 없다고 '새 프로젝트'로 넘겨짚으면 안 된다 — v1은
+        애초에 버전을 남기지 않았으므로, 메타가 비어 있어도 chunks 표에
+        이미 행이 있으면 그건 옛 규칙(하한 없이 문단 하나 = 조각 하나)으로
+        만든 조각이다. 실제 데이터가 있는지로 신규/기존을 가른다.
+
+        chunks_checked도 함께 지운다 — 그러지 않으면 재개 판정
+        (ui/shell.py _resume_if_pending)이 '이미 다 됐다'고 믿고 다시
+        돌지 않는다.
+        """
+        current = self.get_meta("chunking_version")
+        if current == CHUNKING_VERSION:
+            return False
+        had_chunks = self.con.execute("SELECT 1 FROM chunks LIMIT 1").fetchone() is not None
+        if had_chunks:
+            self.con.execute("DELETE FROM chunks")   # CASCADE로 embeddings도 함께 지워진다
+            self.con.execute("DELETE FROM meta WHERE key = 'chunks_checked'")
+            self.audit("chunking.reindex", detail=f"{current or '?'} → {CHUNKING_VERSION}")
+        self.set_meta("chunking_version", CHUNKING_VERSION)
+        return had_chunks
 
     def _stored_version(self) -> str | None:
         """meta 표가 아직 없을 수 있다 — 그때는 새 프로젝트다."""
@@ -489,15 +532,13 @@ class Database:
         이미 배제하는 기준이고, 여기서만 느슨하게 하면 근거가 헐거워진다.
         """
         return self.con.execute(
-            """
+            f"""
             SELECT d.id, d.filename, d.path, d.eff_year, d.eff_month, d.eff_date
             FROM task_docs td
             JOIN documents d ON d.id = td.doc_id
             WHERE td.task_id = ? AND d.eff_month = ? AND d.missing_since IS NULL
               AND d.eff_year IS NOT NULL AND d.eff_date_kind != 'fs'
-              AND (d.hash IS NULL OR d.id = (
-                    SELECT MIN(x.id) FROM documents x
-                    WHERE x.hash = d.hash AND x.missing_since IS NULL))
+              AND {representative_predicate('d')}
             ORDER BY d.eff_year DESC, d.eff_date
             LIMIT ?
             """,
@@ -535,15 +576,13 @@ class Database:
         그 달의 반복 근거가 더 세지면 안 된다.
         """
         return self.con.execute(
-            """
+            f"""
             SELECT d.id, d.eff_year AS year, d.eff_month AS month,
                    d.eff_date, d.eff_precision, d.eff_date_kind
             FROM task_docs td
             JOIN documents d ON d.id = td.doc_id
             WHERE td.task_id = ? AND d.missing_since IS NULL AND d.eff_year IS NOT NULL
-              AND (d.hash IS NULL OR d.id = (
-                    SELECT MIN(x.id) FROM documents x
-                    WHERE x.hash = d.hash AND x.missing_since IS NULL))
+              AND {representative_predicate('d')}
             """,
             (task_id,),
         ).fetchall()
@@ -556,16 +595,14 @@ class Database:
         같은 기준이다. 같은 격자를 가로로 읽는 것이 How이기 때문이다.
         """
         return self.con.execute(
-            """
+            f"""
             SELECT d.id, d.filename, d.eff_month AS month, d.eff_date,
                    d.eff_precision
             FROM task_docs td
             JOIN documents d ON d.id = td.doc_id
             WHERE td.task_id = ? AND d.eff_year = ? AND d.missing_since IS NULL
               AND d.eff_month IS NOT NULL AND d.eff_date_kind != 'fs'
-              AND (d.hash IS NULL OR d.id = (
-                    SELECT MIN(x.id) FROM documents x
-                    WHERE x.hash = d.hash AND x.missing_since IS NULL))
+              AND {representative_predicate('d')}
             """,
             (task_id, year),
         ).fetchall()
@@ -707,12 +744,13 @@ class Database:
         )
 
     def save_question(
-        self, question: str, answer: str, citations: str, withheld: bool, model: str
+        self, question: str, answer: str, citations: str, withheld: bool, model: str,
+        filters: str | None = None,
     ) -> int:
         cur = self.con.execute(
-            "INSERT INTO questions(question, answer, citations, withheld, model) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (question, answer, citations, int(withheld), model),
+            "INSERT INTO questions(question, answer, citations, withheld, model, filters) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (question, answer, citations, int(withheld), model, filters),
         )
         return cur.lastrowid
 

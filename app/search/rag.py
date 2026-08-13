@@ -20,7 +20,9 @@ import numpy as np
 from ..ai.client import OllamaClient
 from ..ai.prompts_loader import render
 from ..ai.schemas import ASK_SCHEMA
-from ..db import Database
+from ..db import Database, representative_predicate
+from . import fts
+from .query import QueryScope, infer_scope
 from .vector import normalize, unpack
 
 TOP_K = 8
@@ -28,6 +30,27 @@ TOP_K = 8
 MIN_SIMILARITY = 0.30
 MAX_CONTEXT_CHARS = 400
 RELATED_FALLBACK = 5
+
+# 두 순위(의미·정확 일치)를 이 깊이까지 각각 훑은 뒤 RRF로 합친다. 최종
+# 컨텍스트(TOP_K)보다 넉넉히 깊게 봐야 한쪽에서만 강한 후보를 놓치지 않는다.
+RANK_POOL = 40
+# RRF(Reciprocal Rank Fusion) 상수. 특정 자료에 맞춰 조정한 값이 아니라
+# 원 논문(Cormack et al. 2009)의 관행값이다 — 순위 1위와 20위의 점수 차이를
+# 완만하게 만들어, 한쪽 순위표의 잡음 하나가 결과를 뒤집지 않게 한다.
+RRF_K = 60
+# 한 문서가 근거 예산(TOP_K)을 독점하지 않게 한다. 실측에서 근거 8건이
+# 사실상 같은 문서의 사본(최종·수정·복사본 등)에 몰린 사례가 있었다
+# (§1 측정 2). 완전 동일본은 대표본 판정으로 걸러지지만, 내용이 조금
+# 다른 버전은 hash가 달라 그 판정을 피한다 — 그래서 별도로 상한을 둔다.
+MAX_CHUNKS_PER_DOC = 2
+# 대표본·연도 필터·다양성 상한이 후보를 걸러낼 때, 이 깊이보다 아래까지
+# 내려가 빈 자리를 채우지 않는다. 실측으로 잡은 회귀: "작년 예산…" 질문에
+# 연도 필터가 2022~2024년의 더 좋은 예산 문서를 제외시키자, 우연히
+# 2025년인 무관한 문서(행정사무감사)가 그 빈자리를 채웠다 — 걸러서 생긴
+# 빈 자리를 무한정 더 깊은 후보로 메우면, 원래라면 답에 안 나왔을 약한
+# 근거가 다양성이라는 명목으로 승격된다. 이 한계를 넘으면 그냥 근거
+# 개수가 TOP_K보다 적게 나가는 편이 낫다.
+EXPLORATION_WINDOW = TOP_K * 2
 
 
 @dataclass(slots=True)
@@ -55,6 +78,10 @@ class Answer:
     related_docs: list[RelatedDoc] = field(default_factory=list)
     model: str = ""
     error: str | None = None
+    # 질문에서 규칙으로 뽑아낸 연도. UI에 직접 보여주진 않지만
+    # questions.filters에 남겨 나중에 "이 질문을 왜 이렇게 좁혔는지"
+    # 확인할 수 있게 한다.
+    inferred_years: list[int] = field(default_factory=list)
 
 
 def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answer:
@@ -83,27 +110,52 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
             error="아직 자료를 읽는 중입니다. 분석이 끝난 뒤 다시 물어보세요.",
         )
 
+    # 하이브리드 검색 — 의미(벡터)와 정확 일치(FTS5)를 각각 넉넉히 훑어
+    # RRF로 합친다. 문서번호·고유명사처럼 정확히 일치해야 하는 질의는
+    # 벡터만으로는 놓치기 쉽다(doc/질문화면_RAG_개선계획.md §1 측정 7).
     scores = matrix @ query_vector
-    ranked = np.argsort(-scores)[:TOP_K]
+    pool = np.argsort(-scores)[:RANK_POOL]
+    vector_ranked = [(int(chunk_ids[i]), float(scores[i])) for i in pool]
+    fts_ranked = fts.search_chunk_ids(db, question, limit=RANK_POOL)
+    combined = _reciprocal_rank_fusion(vector_ranked, fts_ranked)
 
-    strong = [(int(chunk_ids[i]), float(scores[i])) for i in ranked if scores[i] >= MIN_SIMILARITY]
+    # '근거로 쓸 만큼 강한가'는 두 검색 중 하나라도 확신을 준 경우다.
+    # 의미가 가깝거나(MIN_SIMILARITY 이상), 정확히 그 글자가 상위권에 있거나.
+    #
+    # FTS 쪽은 fts_ranked 전체(RANK_POOL=40)가 아니라 상위 TOP_K만 본다.
+    # OR 결합(escape_match_any)은 토큰 하나만 맞아도 걸리므로, "2025년"처럼
+    # 흔한 해와 표기가 겹치는 문서는 40위 안 어딘가에 전부 들어온다 —
+    # bm25 자체는 이런 문서를 이미 순위 뒤쪽으로 정확히 낮게 매기는데,
+    # 위치를 무시하고 "포함되면 무조건 강함"으로 처리하면 그 순위 정보를
+    # 버리는 셈이 된다. 실측: "2025년 행정사무감사…" 질문에 수질통계·
+    # 월간실적보고 문서까지 강한 근거로 승격돼 다양성 상한이 그 노이즈를
+    # 답변에 끌어들였다(doc/질문화면_RAG_개선계획.md §1-D).
+    strong_ids = {cid for cid, score in vector_ranked if score >= MIN_SIMILARITY}
+    strong_ids |= set(fts_ranked[:TOP_K])
+
+    scope = infer_scope(question)
+    strong = _select_context(db, combined, strong_ids, scope)
+
     if not strong:
-        related = _related_documents(db, [int(chunk_ids[i]) for i in ranked[:RELATED_FALLBACK]])
+        related = _related_documents(db, [cid for cid, _score in combined[:RELATED_FALLBACK]])
         return Answer(
             question=question,
             text="확인 가능한 자료가 부족합니다.",
             withheld=True,
             related_docs=related,
+            inferred_years=scope.years,
         )
 
     context_rows = _load_chunk_context(db, [cid for cid, _ in strong])
     if not context_rows:
-        return Answer(question=question, text="확인 가능한 자료가 부족합니다.", withheld=True)
+        return Answer(question=question, text="확인 가능한 자료가 부족합니다.", withheld=True,
+                       inferred_years=scope.years)
 
     prompt, _version = render("ask", context=_format_context(context_rows), question=question)
     data, gen_error = client.generate_json(prompt, ASK_SCHEMA, num_predict=500)
     if gen_error or data is None:
-        return Answer(question=question, text="", withheld=True, error=gen_error or "응답 생성 실패")
+        return Answer(question=question, text="", withheld=True, error=gen_error or "응답 생성 실패",
+                       inferred_years=scope.years)
 
     if not data.get("answered", False):
         related = [RelatedDoc(r["doc_id"], r["filename"], r["path"]) for r in context_rows[:3]]
@@ -113,21 +165,125 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
             withheld=True,
             related_docs=_dedupe(related),
             model=client.gen_model,
+            inferred_years=scope.years,
         )
 
     text = " ".join(str(data.get("answer") or "").split())
     if not text:
-        return Answer(question=question, text="확인 가능한 자료가 부족합니다.", withheld=True)
+        return Answer(question=question, text="확인 가능한 자료가 부족합니다.", withheld=True,
+                       inferred_years=scope.years)
 
     citations = [
         Citation(index=i + 1, doc_id=r["doc_id"], filename=r["filename"],
                  locator=r["locator"], path=r["path"])
         for i, r in enumerate(context_rows)
     ]
-    return Answer(question=question, text=text, withheld=False, citations=citations, model=client.gen_model)
+    return Answer(question=question, text=text, withheld=False, citations=citations,
+                  model=client.gen_model, inferred_years=scope.years)
 
 
 # ── 내부 ────────────────────────────────────────────────────────────
+
+def _reciprocal_rank_fusion(
+    vector_ranked: list[tuple[int, float]], fts_ranked: list[int], k: int = RRF_K,
+) -> list[tuple[int, float]]:
+    """의미 순위와 정확 일치 순위를 하나로 합친다.
+
+    코사인 유사도와 FTS5 bm25는 값의 스케일이 전혀 다르다 — 0.4와 -12.3을
+    직접 비교할 수 없다. RRF는 값이 아니라 순위(몇 번째로 좋은가)만 보고
+    합치므로 스케일 문제가 애초에 생기지 않는다. 규칙만으로 되는 표준적인
+    방법이라 생성 호출을 늘리지 않고도 두 검색을 결합할 수 있다.
+    """
+    scores: dict[int, float] = {}
+    for rank, (chunk_id, _score) in enumerate(vector_ranked):
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
+    for rank, chunk_id in enumerate(fts_ranked):
+        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores.items(), key=lambda item: -item[1])
+
+
+def _select_context(
+    db: Database, combined: list[tuple[int, float]], strong_ids: set[int], scope: QueryScope,
+) -> list[tuple[int, float]]:
+    """RRF 순위에서 실제로 컨텍스트에 넣을 TOP_K를 고른다.
+
+    순서가 중요하다. 먼저 탐색 범위를 EXPLORATION_WINDOW로 못 박는다 —
+    그 아래는 걸러서 생긴 빈 자리를 메우는 데도 쓰지 않는다. 그다음 연도로
+    좁힌다. 대표본 판정과 연도 필터는 '완전히 사라지면 되돌린다' — 근거가
+    아예 없어지는 것보다는 약한 근거라도 보류 판단에 넘기는 편이 낫다
+    (모를 때 모른다고 답하는 건 이 함수가 아니라 그다음 단계, LLM과 후속
+    검증의 몫이다).
+    """
+    eligible = [(cid, score) for cid, score in combined if cid in strong_ids][:EXPLORATION_WINDOW]
+    if not eligible:
+        return []
+
+    meta = _load_chunk_meta(db, [cid for cid, _score in eligible])
+
+    representative = _representative_chunk_ids(db, [cid for cid, _score in eligible])
+    narrowed = [(cid, s) for cid, s in eligible if cid in representative]
+    if narrowed:
+        eligible = narrowed
+
+    if scope.has_year:
+        matching = [
+            (cid, s) for cid, s in eligible
+            if meta.get(cid, {}).get("eff_year") in scope.years
+        ]
+        if matching:
+            eligible = matching
+
+    doc_of = {cid: meta[cid]["doc_id"] for cid, _s in eligible if cid in meta}
+    return _cap_per_document(eligible, doc_of)[:TOP_K]
+
+
+def _cap_per_document(
+    ranked: list[tuple[int, float]], doc_of: dict[int, int],
+) -> list[tuple[int, float]]:
+    """한 문서가 MAX_CHUNKS_PER_DOC를 넘겨 근거 자리를 차지하지 못하게 한다."""
+    kept: list[tuple[int, float]] = []
+    counts: dict[int, int] = {}
+    for chunk_id, score in ranked:
+        doc_id = doc_of.get(chunk_id)
+        if doc_id is not None and counts.get(doc_id, 0) >= MAX_CHUNKS_PER_DOC:
+            continue
+        kept.append((chunk_id, score))
+        if doc_id is not None:
+            counts[doc_id] = counts.get(doc_id, 0) + 1
+    return kept
+
+
+def _representative_chunk_ids(db: Database, chunk_ids: list[int]) -> set[int]:
+    """완전 중복 문서 중 대표본에 속한 조각만 남긴다.
+
+    When·How·문서 화면과 같은 판정 기준(db.representative_predicate)을
+    쓴다 — 화면마다 다른 문서를 대표로 고르면 사용자가 혼란스럽다.
+    """
+    if not chunk_ids:
+        return set()
+    marks = ", ".join("?" * len(chunk_ids))
+    rows = db.con.execute(
+        f"SELECT c.id AS chunk_id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+        f"WHERE c.id IN ({marks}) AND {representative_predicate('d')}",
+        chunk_ids,
+    ).fetchall()
+    return {row["chunk_id"] for row in rows}
+
+
+def _load_chunk_meta(db: Database, chunk_ids: list[int]) -> dict[int, dict]:
+    if not chunk_ids:
+        return {}
+    marks = ", ".join("?" * len(chunk_ids))
+    rows = db.con.execute(
+        f"SELECT c.id AS chunk_id, c.doc_id, d.eff_year FROM chunks c "
+        f"JOIN documents d ON d.id = c.doc_id WHERE c.id IN ({marks})",
+        chunk_ids,
+    ).fetchall()
+    return {
+        row["chunk_id"]: {"doc_id": row["doc_id"], "eff_year": row["eff_year"]}
+        for row in rows
+    }
+
 
 def _load_chunk_matrix(db: Database, model: str) -> tuple[np.ndarray, np.ndarray]:
     rows = db.con.execute(

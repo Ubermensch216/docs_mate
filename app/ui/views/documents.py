@@ -34,8 +34,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...db import Database
+from ...db import Database, representative_predicate
 from ...jobs import SummaryRunner
+from ...search import fts
 from .. import theme
 from ..widgets import (
     EmptyState,
@@ -78,12 +79,8 @@ KIND_LABEL = {
 }
 PRECISION_LABEL = {"day": "일 단위", "month": "월 단위", "year": "연 단위"}
 
-# 대표 문서만 골라내는 조건.
-REPRESENTATIVE = (
-    "(d.hash IS NULL OR d.id = ("
-    "  SELECT MIN(x.id) FROM documents x "
-    "  WHERE x.hash = d.hash AND x.missing_since IS NULL))"
-)
+# 대표 문서만 골라내는 조건. When·How·RAG와 같은 기준을 쓴다(db/repo.py).
+REPRESENTATIVE = representative_predicate("d")
 DUP_COUNT = (
     "(SELECT COUNT(*) FROM documents y "
     " WHERE y.hash = d.hash AND d.hash IS NOT NULL AND y.missing_since IS NULL)"
@@ -270,14 +267,16 @@ class DocumentsView(QWidget):
 
         if term:
             # trigram FTS는 3글자 이상만 처리한다. 짧은 질의는 LIKE로 폴백한다.
-            if len(term) >= 3:
+            # 이 판단·이스케이프 규칙은 질문 화면(RAG)과 공유한다(search/fts.py)
+            # — 갈라지면 같은 검색어에 화면마다 다른 결과가 나온다.
+            if fts.usable_for_trigram(term):
                 try:
                     return self.db.con.execute(
                         f"SELECT d.*, {DUP_COUNT} AS dup_n FROM document_fts f "
                         f"JOIN documents d ON d.id = f.rowid "
                         f"WHERE document_fts MATCH ? AND {' AND '.join(where)} "
                         f"ORDER BY rank LIMIT 500",
-                        (_fts_query(term),),
+                        (fts.escape_match(term),),
                     ).fetchall()
                 except Exception:
                     pass
@@ -522,14 +521,6 @@ def _divider() -> QFrame:
     line.setObjectName("Divider")
     line.setFixedHeight(1)
     return line
-
-
-def _fts_query(term: str) -> str:
-    """공백으로 나눈 조각을 AND로 묶는다. trigram은 구절 전체를 통으로 찾는다."""
-    parts = [p for p in term.split() if len(p) >= 3]
-    if not parts:
-        return f'"{term}"'
-    return " AND ".join(f'"{p}"' for p in parts)
 
 
 def _cell(text: str, doc_id: int | None = None, path: str | None = None) -> QTableWidgetItem:

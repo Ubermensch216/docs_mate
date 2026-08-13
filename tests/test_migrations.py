@@ -57,6 +57,15 @@ CREATE TABLE task_cycles (
     confidence TEXT NOT NULL DEFAULT 'low', decided_by TEXT NOT NULL DEFAULT 'ai',
     evidence TEXT
 );
+-- v3(chunk_fts)이 참조하므로 v1 시절부터 있던 chunks도 흉내 낸다.
+CREATE TABLE chunks (
+    id INTEGER PRIMARY KEY, doc_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL, locator TEXT NOT NULL, text TEXT NOT NULL
+);
+CREATE TABLE embeddings (
+    chunk_id INTEGER PRIMARY KEY, model TEXT NOT NULL,
+    dim INTEGER NOT NULL, vector BLOB NOT NULL
+);
 INSERT INTO meta(key, value) VALUES ('schema_version', '1');
 """
 
@@ -176,7 +185,8 @@ def _schema_of(db: Database) -> dict[str, set[str]]:
     tables = [
         r[0] for r in db.con.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'document_fts%'"
+            "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'document_fts%' "
+            "AND name NOT LIKE 'chunk_fts%'"
         )
     ]
     return {t: {r[1] for r in db.con.execute(f"PRAGMA table_info({t})")} for t in tables}

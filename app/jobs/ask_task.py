@@ -33,6 +33,7 @@ class AskWorker(QObject):
                 _citations_json(answer),
                 answer.withheld,
                 answer.model,
+                filters=_filters_json(answer),
             )
             db.audit(
                 "question.ask", detail=f"{len(self._question)}자",
@@ -103,3 +104,12 @@ def _citations_json(answer: Answer) -> str:
         ],
         ensure_ascii=False,
     )
+
+
+def _filters_json(answer: Answer) -> str | None:
+    """질문에서 규칙으로 뽑아낸 범위. 나중에 '왜 이렇게 좁혔는지' 확인용이다."""
+    import json
+
+    if not answer.inferred_years:
+        return None
+    return json.dumps({"years": answer.inferred_years}, ensure_ascii=False)

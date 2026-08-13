@@ -532,10 +532,13 @@ class Pipeline(QObject):
             ).fetchone()
             if not has_chunks:
                 sections = db.con.execute(
-                    "SELECT locator, text FROM document_sections WHERE doc_id = ? ORDER BY ordinal",
+                    "SELECT kind, locator, text FROM document_sections "
+                    "WHERE doc_id = ? ORDER BY ordinal",
                     (row["id"],),
                 ).fetchall()
-                pieces = build_chunks([(s["locator"], s["text"]) for s in sections])
+                pieces = build_chunks(
+                    [(s["kind"], s["locator"], s["text"]) for s in sections]
+                )
                 if not pieces:
                     report.done = index
                     continue

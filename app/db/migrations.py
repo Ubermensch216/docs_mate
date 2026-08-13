@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 # 이 앱이 쓰는 스키마 버전. schema.sql과 함께 올린다.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 
 def column_exists(con: sqlite3.Connection, table: str, column: str) -> bool:
@@ -95,9 +95,47 @@ _V2_TABLES = (
 )
 
 
+# ── v2 → v3 ─────────────────────────────────────────────────────────
+# 조각 단위 정확 일치 검색(질문화면 RAG 개선 R3). document_fts는 문서
+# 단위라 어느 조각이 일치했는지 알 수 없다.
+
+def _to_v3(con: sqlite3.Connection) -> None:
+    for statement in _V3_STATEMENTS:
+        con.execute(statement)
+    # 외부content FTS5 표는 만든 시점 이후의 변경만 트리거로 따라간다.
+    # 이미 있던 조각은 트리거를 못 봤으므로 명시적으로 다시 채워야 한다.
+    con.execute("INSERT INTO chunk_fts(chunk_fts) VALUES ('rebuild')")
+
+
+_V3_STATEMENTS = (
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
+        text, content='chunks', content_rowid='id', tokenize='trigram'
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+        INSERT INTO chunk_fts(rowid, text) VALUES (new.id, new.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+        INSERT INTO chunk_fts(chunk_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+        INSERT INTO chunk_fts(chunk_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO chunk_fts(rowid, text) VALUES (new.id, new.text);
+    END
+    """,
+)
+
+
 # 버전 문자열 → 그 버전으로 올리는 함수.
 STEPS: dict[str, Callable[[sqlite3.Connection], None]] = {
     "2": _to_v2,
+    "3": _to_v3,
 }
 
 
