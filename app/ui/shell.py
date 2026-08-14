@@ -65,8 +65,9 @@ class TopBar(QWidget):
 
     settings_requested = Signal()
     status_clicked = Signal()
+    project_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, project_name: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("TopBar")
         self.setFixedHeight(theme.TOPBAR_H)
@@ -89,6 +90,16 @@ class TopBar(QWidget):
         name = QLabel("눈치코치")
         name.setObjectName("AppName")
         row.addWidget(name)
+
+        # 어떤 인수인계를 보고 있는지 항상 적어 둔다. 프로젝트가 여럿이 되면
+        # 화면만 봐서는 구별되지 않는다 — 업무 목록도 문서 목록도 남의 것과
+        # 똑같이 생겼다. 누르면 다른 인수인계로 갈아탄다.
+        self.project = QPushButton(project_name or "프로젝트")
+        self.project.setObjectName("Link")
+        self.project.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.project.setToolTip("지금 열려 있는 인수인계 — 눌러서 다른 인수인계로 바꿉니다")
+        self.project.clicked.connect(self.project_requested.emit)
+        row.addWidget(self.project)
         row.addStretch(1)
 
         self.progress = QProgressBar()
@@ -285,10 +296,15 @@ class Sidebar(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db: Database):
+    # 다른 인수인계를 열어 달라 — 창을 새로 만드는 일은 main.py가 한다.
+    switch_requested = Signal()
+
+    def __init__(self, db: Database, project_name: str = ""):
         super().__init__()
         self.db = db
-        self.setWindowTitle("눈치코치 — 업무 인수인계 도구")
+        self.project_name = project_name or db.get_meta("project_name") or ""
+        title = "눈치코치 — 업무 인수인계 도구"
+        self.setWindowTitle(f"{self.project_name} — {title}" if self.project_name else title)
         self.setMinimumSize(*theme.WINDOW_MIN)
 
         root = QWidget()
@@ -297,9 +313,10 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        self.topbar = TopBar()
+        self.topbar = TopBar(self.project_name)
         self.topbar.settings_requested.connect(self._open_settings)
         self.topbar.status_clicked.connect(self._open_status)
+        self.topbar.project_requested.connect(self.switch_requested.emit)
         outer.addWidget(self.topbar)
         self.stage_reports: dict[str, object] = {}
         self._status_dialog = None

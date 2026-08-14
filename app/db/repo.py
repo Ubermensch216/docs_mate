@@ -63,9 +63,19 @@ def default_project_dir() -> Path:
 
 
 def open_project(name: str = "default", root: Path | None = None) -> "Database":
-    directory = (root or default_project_dir()) / name
-    directory.mkdir(parents=True, exist_ok=True)
-    db = Database(directory / "project.db")
+    return open_project_at((root or default_project_dir()) / name)
+
+
+def open_project_at(directory: Path | str) -> "Database":
+    """폴더 하나를 프로젝트로 연다.
+
+    이름이 아니라 경로를 받는 통로가 따로 필요하다 — 프로젝트 목록(registry)은
+    저장 위치 바깥(USB·공유 폴더)의 폴더도 열 수 있어야 하고, 그 경우 '이름'
+    으로는 가리킬 수 없다.
+    """
+    folder = Path(directory)
+    folder.mkdir(parents=True, exist_ok=True)
+    db = Database(folder / "project.db")
     db.init()
     return db
 

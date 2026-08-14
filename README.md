@@ -115,9 +115,15 @@ call .venv\Scripts\activate
 # 의존성 패키지 설치
 pip install -r requirements.txt
 
-# 앱 실행
+# 앱 실행 (시작 화면에서 인수인계를 고르거나 새로 만듭니다)
 python -m app.main
+
+# 특정 프로젝트를 곧장 열기 (개발·시험용)
+python -m app.main --project default
 ```
+
+> 인수인계 하나가 프로젝트 하나입니다. 목록은 `%LOCALAPPDATA%\NunchiCoach\projects\registry.json`에
+> 담기지만, 그 파일이 없어도 폴더를 훑어 기존 프로젝트를 찾아냅니다.
 
 ### 3. 테스트 실행
 ```bash

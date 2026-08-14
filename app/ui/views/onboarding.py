@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -124,7 +125,8 @@ class OnboardingView(QWidget):
         files = 0
         target = 0
         size = 0
-        denied: list[str] = []
+        blocked = 0                 # 읽을 수 없던 **파일** 수 (§23)
+        denied: list[str] = []      # 아예 들어가지 못한 폴더
         capped = False
 
         for folder in self._folders:
@@ -135,28 +137,38 @@ class OnboardingView(QWidget):
                         break
                     if any(part in SKIP_DIRS for part in path.parts):
                         continue
+                    # is_file()로 먼저 거르지 않는다 — 권한이 없으면 그 함수는
+                    # 오류 대신 False를 돌려주어, 못 읽는 파일이 '없는 파일'과
+                    # 구별되지 않는다. 사용자에게는 그 둘이 전혀 다르다.
                     try:
-                        if not path.is_file():
-                            continue
-                        files += 1
-                        size += path.stat().st_size
-                        if path.suffix.lower() in supported:
-                            target += 1
+                        info = path.stat()
                     except OSError:
+                        blocked += 1
                         continue
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    files += 1
+                    size += info.st_size
+                    if path.suffix.lower() in supported:
+                        target += 1
             except (PermissionError, OSError) as exc:
                 denied.append(f"{folder} ({exc.strerror or exc})")
 
         prefix = "약 " if capped else ""
         text = (
             f"{prefix}파일 {files:,}개 · {_human(size)} · "
-            f"분석 대상 문서 {target:,}건"
+            f"분석 대상 문서 {target:,}건 · 접근 불가 {blocked:,}개"
         )
         if capped:
             text += f"  (사전 점검은 {PRECHECK_CAP:,}건까지만 훑습니다)"
         if denied:
-            text += "\n⚠ 접근할 수 없는 경로: " + ", ".join(denied)
-        elif target == 0:
+            text += "\n⚠ 열 수 없는 폴더: " + ", ".join(denied)
+        if blocked:
+            text += (
+                f"\nⓘ 파일 {blocked:,}개는 권한이나 잠금 때문에 지금 읽을 수 없습니다. "
+                "나머지는 그대로 분석합니다."
+            )
+        if target == 0 and not denied:
             text += "\n⚠ 분석할 수 있는 문서를 찾지 못했습니다."
 
         self.summary.setText(text)
