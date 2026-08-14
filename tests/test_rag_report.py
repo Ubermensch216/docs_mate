@@ -127,3 +127,37 @@ def test_case_ids_are_unique():
 
 def test_cases_file_is_valid_json():
     json.loads(Path(DEFAULT_CASES).read_text(encoding="utf-8"))
+
+
+# ── 반복 실행 (편차 측정) ───────────────────────────────────────────
+
+def test_repeat_option_exists_and_defaults_to_one():
+    """생성 모델 출력은 실행마다 다르다 — 프롬프트 판단에는 반복이 필요하다."""
+    from app.tools.rag_report import _parse_args
+
+    assert _parse_args([]).repeat == 1
+    assert _parse_args(["--repeat", "3"]).repeat == 3
+
+
+def test_stability_report_marks_flaky_cases(capsys):
+    """일부만 통과한 사례를 '통과'로 뭉뚱그리면 운을 개선으로 착각한다."""
+    from app.tools.rag_report import _print_stability
+
+    steady = outcome(case_id="steady")
+    flaky_pass = outcome(case_id="flaky")
+    flaky_fail = outcome(case_id="flaky")
+    flaky_fail.failures = ["실패"]
+
+    _print_stability([[steady, flaky_pass], [steady, flaky_fail]])
+    printed = capsys.readouterr().out
+
+    assert "steady   2/2 통과" in printed
+    assert "flaky   1/2 통과" in printed
+    assert "실행마다 결과가 갈리는 사례: flaky" in printed
+
+
+def test_stability_report_is_quiet_when_everything_is_consistent(capsys):
+    from app.tools.rag_report import _print_stability
+
+    _print_stability([[outcome(case_id="a")], [outcome(case_id="a")]])
+    assert "실행마다 결과가 갈리는" not in capsys.readouterr().out

@@ -2,6 +2,7 @@
 
     python -m app.tools.rag_report [--project 이름] [--data 경로]
                                    [--cases 경로] [--case id] [--json 경로]
+                                   [--repeat 횟수]
 
 왜 필요한가
   RAG는 고쳐도 좋아졌는지 눈으로 알 수 없다. 답이 그럴듯해 보이는 것과
@@ -15,6 +16,12 @@
   오염             들어오면 안 되는 업무의 문서가 섞였는가.
   인용 전량 나열   인용 수가 늘 TOP_K와 같으면 인용이 근거가 아니라는 뜻이다.
   문서 다양성      중복본이 근거 자리를 독점하지 않는가.
+
+한 번만 돌리지 말 것 (실측 근거)
+  생성 모델의 출력은 실행마다 다르다. 같은 프롬프트로 같은 평가셋을 돌려
+  1회차 7/8, 2회차 8/8이 나온 적이 있다. 프롬프트를 바꾸고 판단할 때는
+  --repeat 3 이상으로 돌려 편차를 함께 보라. 그러지 않으면 개선이 아니라
+  운을 측정하게 된다.
 
 원본과 프로젝트 DB는 읽기만 한다. 질문 이력도 남기지 않는다.
 """
@@ -80,21 +87,32 @@ def main(argv: list[str] | None = None) -> int:
             print(f"⚠ 임베딩이 빠진 조각 {left:,}개 — 이 상태의 점수는 신뢰할 수 없습니다")
         print()
 
-        outcomes = [_run(db, case) for case in cases]
+        rounds: list[list[Outcome]] = []
+        for attempt in range(1, args.repeat + 1):
+            if args.repeat > 1:
+                print(f"[{attempt}/{args.repeat}회차]")
+            rounds.append([_run(db, case) for case in cases])
     finally:
         db.close()
 
+    outcomes = rounds[-1]
     _print_details(outcomes)
     _print_summary(outcomes)
+    if args.repeat > 1:
+        _print_stability(rounds)
 
     if args.json:
         Path(args.json).write_text(
-            json.dumps([_as_dict(o) for o in outcomes], ensure_ascii=False, indent=2),
+            json.dumps(
+                [[_as_dict(o) for o in run] for run in rounds] if args.repeat > 1
+                else [_as_dict(o) for o in outcomes],
+                ensure_ascii=False, indent=2,
+            ),
             encoding="utf-8",
         )
         print(f"\n결과를 저장했습니다: {args.json}")
 
-    return 0 if all(o.passed for o in outcomes) else 1
+    return 0 if all(o.passed for run in rounds for o in run) else 1
 
 
 # ── 실행 ────────────────────────────────────────────────────────────
@@ -214,6 +232,33 @@ def _print_summary(outcomes: list[Outcome]) -> None:
         print(f"응답 시간       중앙값 {middle:.1f}초 · 최대 {times[-1]:.1f}초")
 
 
+def _print_stability(rounds: list[list[Outcome]]) -> None:
+    """사례마다 몇 번 통과했는지 — 한 번의 실행을 결론으로 삼지 않기 위해.
+
+    같은 프롬프트로 같은 질문을 던져도 통과와 실패가 갈린다(실측: v5가
+    1회차 7/8, 2회차 8/8). 편차를 모르고 단일 실행으로 프롬프트를 채택하면,
+    개선이 아니라 운을 측정한 것이 된다.
+    """
+    total = len(rounds)
+    passes: dict[str, int] = {}
+    for run in rounds:
+        for outcome in run:
+            passes[outcome.case_id] = passes.get(outcome.case_id, 0) + int(outcome.passed)
+
+    print()
+    print("─" * 72)
+    print(f"{total}회 반복 안정성")
+    unstable = []
+    for case_id, count in passes.items():
+        mark = "○" if count == total else ("✕" if count == 0 else "△")
+        if 0 < count < total:
+            unstable.append(case_id)
+        print(f"  {mark} {case_id}   {count}/{total} 통과")
+    if unstable:
+        print(f"\n  △ 실행마다 결과가 갈리는 사례: {', '.join(unstable)}")
+        print("    이런 사례는 한 번의 통과를 개선의 근거로 삼을 수 없습니다.")
+
+
 def _as_dict(outcome: Outcome) -> dict:
     return {
         "id": outcome.case_id,
@@ -249,6 +294,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help=f"프로젝트 저장 위치 (기본: {default_project_dir()})")
     parser.add_argument("--cases", default=str(DEFAULT_CASES), help="평가셋 경로")
     parser.add_argument("--case", default=None, help="사례 하나만 실행")
+    parser.add_argument(
+        "--repeat", type=int, default=1,
+        help="같은 평가셋을 여러 번 돌려 편차를 본다 (프롬프트 변경 판단 시 3회 이상 권장)",
+    )
     parser.add_argument("--json", default=None, help="결과를 JSON으로 저장할 경로")
     return parser.parse_args(argv)
 
