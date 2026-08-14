@@ -27,6 +27,7 @@ from .common import (
     section_title,
     view_title,
 )
+from .evidence_drawer import Evidence, EvidenceDrawer
 from .flow_grid import FlowGrid
 from .task_card import MonthStrip, TaskCard, color_for
 from .timeline_grid import TimelineGrid, legend_text
@@ -35,6 +36,8 @@ __all__ = [
     "Badge",
     "Card",
     "EmptyState",
+    "Evidence",
+    "EvidenceDrawer",
     "EvidenceChip",
     "FlowGrid",
     "IconChoice",

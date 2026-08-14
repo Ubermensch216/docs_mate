@@ -228,6 +228,8 @@ SIDEBAR_W = 216           # 메뉴 이름 아래 한 줄 설명이 들어갈 폭
 TOPBAR_H = 48
 ROW_H = 36
 DETAIL_PANEL_W = 360
+# 근거 서랍(계획서 §28: 360~420px). 인용문이 서너 줄로 접히는 최소 폭이다.
+DRAWER_W = 380
 CONTENT_MAX_W = 1040
 WINDOW_MIN = (1120, 720)
 
@@ -390,6 +392,23 @@ def stylesheet(text_size: str = "medium") -> str:
         border-bottom: 3px solid {PRIMARY};
     }}
     QWidget#TabBar {{ background: transparent; }}
+
+    /* ── 근거 서랍 ──
+       본문에서 떼어 낸 판이라는 것이 보여야 한다. 왼쪽 테두리로 경계를
+       긋고 바탕을 한 단계 낮춘다. */
+    QFrame#EvidenceDrawer {{
+        background: {SURFACE};
+        border-left: 1px solid {BORDER_STRONG};
+    }}
+    /* 인용문은 '이 앱이 쓴 말'이 아니라 '문서에 있던 말'이다 — 따옴표만으로는
+       약해서 옅은 판에 얹고 왼쪽에 띠를 둔다. */
+    QLabel#EvidenceQuote {{
+        background: {BG};
+        border-left: 3px solid {BORDER_STRONG};
+        border-radius: {RADIUS_SM}px;
+        padding: {SP_SM}px {SP_MD}px;
+        color: {TEXT};
+    }}
 
     /* ── 공통 ── */
     QLabel#ViewTitle {{

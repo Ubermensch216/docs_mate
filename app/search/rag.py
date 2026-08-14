@@ -77,6 +77,9 @@ NEIGHBOR_SPAN = 1
 # 이 비율보다 많은 문서에 나오는 낱말은 주제를 가르지 못한다고 본다.
 # '업무'·'자료'처럼 어느 공문에나 있는 말로 관련성을 재면 무엇이든 통과한다.
 GENERIC_TERM_RATIO = 0.5
+# 근거 미리보기에 담을 글자 수. 사용자가 "이 문장이 정말 저 문서에서 나왔나"를
+# 앱 안에서 확인할 만큼이면 된다 — 그 이상은 원본을 여는 편이 낫다.
+SNIPPET_CHARS = 400
 
 
 @dataclass(slots=True)
@@ -86,6 +89,9 @@ class Citation:
     filename: str
     locator: str
     path: str
+    # 근거 문장 자체. 원본을 열지 않고도 앱 안에서 확인할 수 있어야 한다
+    # (계획서 §14 — Claim → Evidence → Original 3단계).
+    snippet: str = ""
 
 
 @dataclass(slots=True)
@@ -290,6 +296,7 @@ def _compose_answer(
                 citations.append(Citation(
                     index=renumbered[source], doc_id=row["doc_id"],
                     filename=row["filename"], locator=row["locator"], path=row["path"],
+                    snippet=" ".join(row["text"].split())[:SNIPPET_CHARS],
                 ))
             marks.append(renumbered[source])
         suffix = "".join(f"[{m}]" for m in sorted(set(marks)))

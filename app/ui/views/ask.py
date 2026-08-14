@@ -12,6 +12,9 @@
 
 from __future__ import annotations
 
+import html
+import re
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -28,7 +31,9 @@ from .. import theme
 from ..widgets import (
     Card,
     EmptyState,
+    Evidence,
     EvidenceChip,
+    EvidenceDrawer,
     InfoDot,
     UnknownBlock,
     clear_layout,
@@ -58,11 +63,23 @@ class AskView(QWidget):
         # 첫 질문만 유독 느린 것은 거의 전부 모델 적재 때문이다.
         self._warmup = WarmupRunner(self)
         self._current_question_id: int | None = None
+        self._answer: Answer | None = None
 
-        outer = QVBoxLayout(self)
+        # 본문 + 근거 서랍. 서랍은 기본으로 숨어 있고 [n]을 누르면 열린다.
+        split = QHBoxLayout(self)
+        split.setContentsMargins(0, 0, 0, 0)
+        split.setSpacing(0)
+
+        main = QWidget()
+        outer = QVBoxLayout(main)
         outer.setContentsMargins(theme.SP_XL, theme.SP_XL, theme.SP_XL, theme.SP_XL)
         outer.setSpacing(theme.SP_LG)
         outer.setAlignment(Qt.AlignmentFlag.AlignTop)
+        split.addWidget(main, 1)
+
+        self.drawer = EvidenceDrawer()
+        self.drawer.open_original.connect(self._open)
+        split.addWidget(self.drawer)
 
         title_row = QHBoxLayout()
         title_row.setSpacing(theme.SP_SM)
@@ -179,6 +196,9 @@ class AskView(QWidget):
         self._runner.start(question)
         self.input.setEnabled(False)
         self.send.setEnabled(False)
+        # 지난 답의 근거가 서랍에 남아 있으면 새 답의 근거로 오해한다.
+        self._answer = None
+        self.drawer.dismiss()
         clear_layout(self.result_layout)
         self.result_layout.addWidget(muted_label(f"“{question}” 찾아보는 중…"))
 
@@ -189,6 +209,7 @@ class AskView(QWidget):
 
     def _render_answer(self, answer: Answer) -> None:
         clear_layout(self.result_layout)
+        self._answer = answer
 
         if answer.error:
             self.result_layout.addWidget(UnknownBlock(answer.error))
@@ -211,14 +232,28 @@ class AskView(QWidget):
             self.result_layout.addWidget(card)
             return
 
-        card.body.addWidget(muted_label(answer.text))
+        # 문장 끝의 [1][2]를 누를 수 있게 만든다. 근거 목록을 따로 읽고
+        # 머릿속에서 짝을 맞추는 것이 아니라, 그 문장에서 바로 근거로 간다
+        # (계획서 §14 — Claim → Evidence → Original).
+        body = muted_label(_linkify_citations(answer.text))
+        body.setTextFormat(Qt.TextFormat.RichText)
+        body.setOpenExternalLinks(False)
+        body.linkActivated.connect(self._show_citation)
+        card.body.addWidget(body)
 
         if answer.citations:
             card.body.addWidget(section_title("근거"))
             for citation in answer.citations:
-                chip = EvidenceChip(citation.doc_id, citation.filename, citation.locator)
-                chip.opened.connect(lambda _doc_id, p=citation.path: self._open(p))
+                chip = EvidenceChip(
+                    citation.doc_id, f"[{citation.index}] {citation.filename}",
+                    citation.locator,
+                )
+                chip.opened.connect(
+                    lambda _doc_id, n=citation.index: self._show_citation(str(n))
+                )
                 card.body.addWidget(chip, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self._add_followups(card, answer)
 
         feedback = QHBoxLayout()
         feedback.setSpacing(theme.SP_MD)
@@ -233,6 +268,51 @@ class AskView(QWidget):
 
         self.result_layout.addWidget(card)
 
+    # ── 근거 서랍 ───────────────────────────────────────────────────
+    def _show_citation(self, index: str) -> None:
+        """[n]을 눌렀을 때 그 근거만 서랍에 띄운다."""
+        if self._answer is None:
+            return
+        try:
+            wanted = int(index)
+        except ValueError:
+            return
+        picked = [c for c in self._answer.citations if c.index == wanted]
+        self.drawer.show_evidence(
+            [
+                Evidence(label=c.filename, locator=c.locator,
+                         snippet=c.snippet, path=c.path)
+                for c in picked
+            ],
+            title=f"근거 [{wanted}]",
+        )
+
+    # ── 후속 질문 ───────────────────────────────────────────────────
+    def _add_followups(self, card: Card, answer: Answer) -> None:
+        """이전 대화를 기억하는 대신 **완성된 새 질문**을 만든다 (기준서 §17).
+
+        버튼을 누르면 그 자리에서 독립적으로 검증 가능한 질문 하나가 새로
+        실행된다 — 대화처럼 이어가되 챗봇으로 흐르지 않는다.
+        """
+        suggestions = _followup_questions(answer)
+        if not suggestions:
+            return
+
+        card.body.addWidget(muted_label("이어서 물어보기", small=True))
+        row = QHBoxLayout()
+        row.setSpacing(theme.SP_SM)
+        for label, question in suggestions:
+            button = QPushButton(label)
+            button.setToolTip(f"이렇게 묻습니다: {question}")
+            button.clicked.connect(lambda _=False, q=question: self._ask_text(q))
+            row.addWidget(button)
+        row.addStretch(1)
+        card.body.addLayout(row)
+
+    def _ask_text(self, question: str) -> None:
+        self.input.setText(question)
+        self._ask()
+
     def _rate(self, rating: str, button: QPushButton) -> None:
         row = self.db.con.execute(
             "SELECT id FROM questions ORDER BY id DESC LIMIT 1"
@@ -245,3 +325,47 @@ class AskView(QWidget):
 
     def _open(self, path: str) -> None:
         open_original(self, self.db, path)
+
+
+# ── 표시 도우미 ─────────────────────────────────────────────────────
+
+_CITATION_MARK = re.compile(r"\[(\d+)\]")
+
+
+def _linkify_citations(text: str) -> str:
+    """문장 끝의 [1][2]를 누를 수 있는 링크로 바꾼다.
+
+    QLabel의 리치 텍스트를 쓰므로 본문은 반드시 이스케이프한다 — 문서에서
+    온 문장에 <, & 같은 글자가 섞이면 태그로 해석돼 답이 깨진다.
+    """
+    escaped = html.escape(text or "")
+    return _CITATION_MARK.sub(
+        lambda m: f'<a href="{m.group(1)}" style="text-decoration:none;">[{m.group(1)}]</a>',
+        escaped,
+    )
+
+
+def _followup_questions(answer: Answer) -> list[tuple[str, str]]:
+    """(버튼 이름, 실제로 실행할 완성된 질문).
+
+    이전 질문을 가리키는 지시대명사("그럼 작년은?")를 만들지 않는다. 각
+    질문은 그것만 읽어도 뜻이 통해야 나중에 그 답을 다시 검증할 수 있다.
+    """
+    question = (answer.question or "").strip()
+    if not question:
+        return []
+
+    out: list[tuple[str, str]] = []
+    years = answer.inferred_years
+    if years:
+        # "2025년 …"을 "2024년 …"으로 바꾼 완전한 질문을 만든다.
+        previous = min(years) - 1
+        shifted = re.sub(r"(?<!\d)\d{4}(?=\s*년)", str(previous), question)
+        if shifted == question:
+            shifted = f"{previous}년 자료로 보면 어떤가요? {question}"
+        out.append(("지난해 자료와 비교", shifted))
+
+    documents = {c.filename for c in answer.citations}
+    if documents:
+        out.append(("근거 문서 더 보기", f"{question} 관련 문서를 모두 알려줘"))
+    return out
