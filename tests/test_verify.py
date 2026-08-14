@@ -81,6 +81,28 @@ def test_single_digit_numbers_are_not_flagged():
     assert len(result.kept) == 1
 
 
+def test_trailing_punctuation_is_not_treated_as_part_of_the_number():
+    """실측으로 잡은 결함: '820, 2분기 0'에서 '820,'을 통째로 숫자로 잡았다.
+
+    쉼표·마침표를 숫자 문자로 받는 것은 '1,234'·'3.14' 때문인데, 그대로 두면
+    숫자 뒤에 쉼표가 오는 정상 문장이 전부 버려진다.
+    """
+    sources = {1: "예산요구액 820 집행액 210"}
+    result = verify_sentences(
+        [sentence("예산요구액은 820, 집행액은 210.", [1])], sources,
+    )
+    assert len(result.kept) == 1, result.dropped and result.dropped[0].reason
+
+
+def test_thousands_separator_inside_a_number_is_preserved():
+    """'1,234'는 숫자 하나다 — 쉼표를 무조건 떼면 이쪽이 깨진다."""
+    result = verify_sentences(
+        [sentence("금액은 1,234원이다", [1])], {1: "총액 5,678원"},
+    )
+    assert result.kept == []
+    assert "1,234" in result.dropped[0].reason
+
+
 def test_number_check_looks_only_at_the_sentences_own_cited_sources():
     """근거로 밝히지 않은 다른 조각에 그 숫자가 있어도 소용없다 — 인용을 안 했다."""
     result = verify_sentences(

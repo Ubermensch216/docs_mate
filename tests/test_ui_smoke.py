@@ -964,3 +964,55 @@ def test_documents_view_hides_non_document_files_by_default(make_window, db):
     assert view.table.rowCount() == 1
     view.documents_only.setChecked(False)
     assert view.table.rowCount() == 2
+
+
+# ── 모델 예열 (R8) ──────────────────────────────────────────────────
+
+def test_ask_view_warms_up_the_model_once_when_ready(make_window, db, monkeypatch):
+    """첫 질문만 유독 느린 것은 거의 전부 모델 적재 때문이다.
+
+    사용자가 타이핑하는 동안 미리 올려 둔다. 화면을 오갈 때마다 다시
+    부르면 그것대로 자원 낭비이므로 한 번만 돈다.
+    """
+    from app.jobs import ask_task
+
+    calls = []
+    monkeypatch.setattr(
+        ask_task.WarmupRunner, "start",
+        lambda self: calls.append(1) or True,
+    )
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    window = make_window(db)
+    view = window.views["ask"]
+
+    view.refresh()
+    view.refresh()
+    assert len(calls) >= 1
+
+
+def test_ask_view_does_not_warm_up_before_the_index_is_ready(make_window, db, monkeypatch):
+    """색인이 없으면 질문할 수도 없다 — 모델을 미리 올릴 이유가 없다."""
+    from app.jobs import ask_task
+
+    calls = []
+    monkeypatch.setattr(
+        ask_task.WarmupRunner, "start",
+        lambda self: calls.append(1) or True,
+    )
+
+    _add_docs(db, count=2, parsed=0)
+    window = make_window(db)
+    window.views["ask"].refresh()
+    assert calls == []
+
+
+def test_warmup_runs_only_once_even_when_started_repeatedly():
+    """WarmupRunner 자체의 계약 — 두 번째 호출부터는 아무 일도 하지 않는다."""
+    from app.jobs import WarmupRunner
+
+    runner = WarmupRunner()
+    started = [runner.start() for _ in range(3)]
+    runner.stop()
+    assert started.count(True) == 1

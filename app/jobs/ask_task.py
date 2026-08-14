@@ -11,6 +11,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
+from ..ai.client import OllamaClient
 from ..db import Database
 from ..search.rag import Answer, ask
 
@@ -92,6 +93,71 @@ class AskRunner(QObject):
         if worker is not None:
             worker.deleteLater()
         self.done.emit(answer)
+
+
+class WarmupRunner(QObject):
+    """질문 화면에 들어올 때 생성 모델을 미리 올려 둔다.
+
+    실측: 첫 질문만 40.8초, 이후 11~16초였다. 차이는 거의 전부 모델 적재다
+    — 임베딩 모델과 생성 모델이 메모리에서 서로를 밀어내기 때문에(ai/client.py의
+    KEEP_ALIVE 주석 참고) 질문 화면에서 처음 부를 때 다시 올라온다.
+
+    사용자가 질문을 타이핑하는 몇 초 동안 미리 올려 두면 그 지연이 보이지
+    않는다. 실패해도 조용히 넘어간다 — 예열은 편의일 뿐이고, 안 되면
+    평소처럼 첫 질문이 조금 느릴 뿐이다.
+    """
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent)
+        self._thread: QThread | None = None
+        self._done = False
+
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.stop)
+
+    def start(self) -> bool:
+        """한 번만 돈다. 화면을 오갈 때마다 모델을 다시 부르지 않는다."""
+        if self._done or (self._thread is not None and self._thread.isRunning()):
+            return False
+        self._done = True
+
+        thread = QThread()
+        worker = _WarmupWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._thread = thread
+        thread.start()
+        return True
+
+    def stop(self, wait_ms: int = 5000) -> None:
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait(wait_ms)
+
+
+class _WarmupWorker(QObject):
+    finished = Signal()
+
+    def run(self) -> None:
+        try:
+            client = OllamaClient()
+            if client.health().generation_ready:
+                # 가장 짧은 호출로 모델만 올린다. 결과는 쓰지 않는다.
+                client.generate_json("준비", _WARMUP_SCHEMA, num_predict=1)
+        except Exception:
+            pass   # 예열 실패는 사용자에게 알릴 일이 아니다
+        self.finished.emit()
+
+
+_WARMUP_SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+}
 
 
 def _citations_json(answer: Answer) -> str:

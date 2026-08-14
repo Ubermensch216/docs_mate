@@ -166,6 +166,13 @@ def _judge(case: dict, outcome: Outcome) -> list[str]:
         if banned in joined:
             failures.append(f"엉뚱한 자료가 근거에 섞였다: {banned}")
 
+    # 올바른 문서를 인용했다고 질문에 답한 것은 아니다. 실측으로 겪었다 —
+    # "2023년 예산 요구액이 얼마야?"에 금액 없이 "자료가 작성되었다"고
+    # 답했는데도 근거 문서가 맞아서 통과 처리됐다.
+    for needle in case.get("must_contain") or []:
+        if not outcome.withheld and needle not in outcome.answer:
+            failures.append(f"답에 있어야 할 내용이 없다: {needle}")
+
     minimum = case.get("min_distinct_docs")
     if minimum and not outcome.withheld and outcome.distinct_docs < minimum:
         failures.append(

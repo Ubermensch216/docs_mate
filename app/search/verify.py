@@ -25,6 +25,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..core import korean
+
 _NUMBER = re.compile(r"\d[\d,.]*%?")
 _MIN_NUMBER_LEN = 2   # 한두 자리 순번("1분기"의 "1")까지 걸면 오탐이 잦다
 # 실측 기준값이 아니라 임시값이다 — R1 평가셋으로 재조정 대상(rag_report).
@@ -55,13 +57,22 @@ class VerifyResult:
 
 def verify_sentences(
     raw_sentences: list[Any], source_text: dict[int, str],
+    support_text: dict[int, str] | None = None,
 ) -> VerifyResult:
     """모델이 낸 sentences 배열을 검증해 살아남은 것만 돌려준다.
 
     source_text는 {1-based 근거 번호: 그 조각 본문}. _format_context가
     매긴 번호와 같은 번호 체계를 써야 한다 — 다르면 멀쩡한 인용도
     '존재하지 않는 번호'로 오판한다.
+
+    support_text는 사실 확인에만 쓰는 더 넓은 본문이다(기본값은 source_text).
+    조각 하나가 스스로를 설명하지 못할 때 이웃 조각을 함께 컨텍스트에
+    넣는데(rag.py의 _expand_neighbors), 그렇게 보여준 이웃을 검증에서는
+    근거로 인정하지 않으면 앞뒤가 맞지 않는다. 실측으로 겪었다 — 모델이
+    표 조각의 '820'을 인용하며 옆 문단의 '2023년'을 함께 쓴 정확한 문장을
+    냈는데, 연도가 인용 조각에 없다는 이유로 버려졌다.
     """
+    support_text = support_text or source_text
     result = VerifyResult()
     for item in raw_sentences:
         if not isinstance(item, dict):
@@ -80,7 +91,9 @@ def verify_sentences(
             result.dropped.append(Dropped(text, "존재하지 않는 근거 번호를 인용했다"))
             continue
 
-        cited_text = " ".join(source_text[s] for s in valid_sources)
+        cited_text = " ".join(
+            support_text.get(s, source_text[s]) for s in valid_sources
+        )
 
         missing = _unsupported_numbers(text, cited_text)
         if missing:
@@ -110,13 +123,24 @@ def _clean_sources(value: Any) -> list[int]:
 
 
 def _unsupported_numbers(text: str, cited_text: str) -> list[str]:
-    numbers = {n for n in _NUMBER.findall(text) if len(n) >= _MIN_NUMBER_LEN}
+    """문장의 숫자 중 근거에 없는 것. 문장부호는 떼고 본다.
+
+    쉼표·마침표를 숫자 일부로 받는 이유는 '1,234'·'3.14' 때문이다. 그런데
+    그대로 두면 "820, 2분기 0"에서 '820,'을 통째로 숫자로 잡아 근거에 없다고
+    판정한다 — 정상 문장이 계속 버려졌다. 뒤에 붙은 문장부호만 떼어 낸다.
+    """
+    numbers = {
+        stripped
+        for n in _NUMBER.findall(text)
+        if len(stripped := korean.strip_punctuation(n)) >= _MIN_NUMBER_LEN
+    }
     return sorted(n for n in numbers if n not in cited_text)
 
 
 def _overlaps_enough(text: str, cited_text: str) -> bool:
-    tokens = [t for t in text.split() if len(t) >= 2]
-    if not tokens:
-        return True   # 판단할 낱말이 없으면(조사뿐 등) 막지 않는다
-    hits = sum(1 for t in tokens if t in cited_text)
-    return (hits / len(tokens)) >= MIN_OVERLAP
+    """인용한 근거와 말이 겹치는가. 조사·어미가 붙은 형태도 같은 말로 본다.
+
+    낱말 완전일치로 재면 "예산요구액은"이 근거의 "예산요구액"과 다른 말이
+    되어 정상 문장이 버려진다 — 실측으로 겪었다(core/korean.py 참고).
+    """
+    return korean.overlap_ratio(text, cited_text) >= MIN_OVERLAP

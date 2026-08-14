@@ -24,13 +24,24 @@ from ..ai.prompts_loader import render
 from ..ai.schemas import ASK_SCHEMA
 from ..db import Database, representative_predicate
 from . import fts
+from ..core import korean
 from .query import QueryScope, infer_scope
+from .rerank import Candidate, collapse_near_duplicates, rerank
 from .vector import normalize, unpack
 from .verify import VerifiedSentence, verify_sentences
 
 TOP_K = 8
-# 실측 기준값이 아니라 임시값이다. 실제 자료로 재조정이 필요하다(doc/00 §8.2 방식).
-MIN_SIMILARITY = 0.30
+# 실측으로 보정한 값(R7). 옛 임시값 0.30은 아무것도 거르지 못했다 — 대부분의
+# 질의에서 138개 조각이 전부 이 선을 넘었다. 평가셋 8개의 최고 유사도 분포:
+#     답해야 하는 질문   0.490 ~ 0.672
+#     유보해야 하는 질문 0.316 ~ 0.474
+# 0.40은 두 무리 사이에 놓이되 답해야 하는 쪽(최저 0.490)과 0.09의 여유를
+# 둔다. 이 선을 넘기면 '자료에 없는 주제'가 생성 단계까지 가지 않고 검색
+# 단계에서 걸러진다 — 더 빠르고, 모델의 판단에 덜 기댄다.
+#
+# 주의: 합성 표본 138조각·질문 8개로 잡은 값이다. 실제 기관 자료로
+# 파일럿할 때 같은 방법으로 다시 재야 한다(app/tools/rag_report.py).
+MIN_SIMILARITY = 0.40
 MAX_CONTEXT_CHARS = 400
 RELATED_FALLBACK = 5
 
@@ -58,6 +69,14 @@ GEN_TOKEN_BUDGET = 900
 # 근거가 다양성이라는 명목으로 승격된다. 이 한계를 넘으면 그냥 근거
 # 개수가 TOP_K보다 적게 나가는 편이 낫다.
 EXPLORATION_WINDOW = TOP_K * 2
+# 고른 조각의 바로 앞뒤를 함께 넣는다. 조각 하나가 스스로를 설명하지 못하는
+# 경우가 있다 — 실측: '[집계] 예산요구액 820'이라는 표 조각에는 연도도
+# 업무명도 없고, 그 정보는 바로 앞 본문 조각에만 있다. 표만 근거로 받으면
+# 모델은 "2023년 예산 요구액이 얼마야?"에 금액을 답하지 못한다(0/3 실패).
+NEIGHBOR_SPAN = 1
+# 이 비율보다 많은 문서에 나오는 낱말은 주제를 가르지 못한다고 본다.
+# '업무'·'자료'처럼 어느 공문에나 있는 말로 관련성을 재면 무엇이든 통과한다.
+GENERIC_TERM_RATIO = 0.5
 
 
 @dataclass(slots=True)
@@ -141,7 +160,7 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
     strong_ids |= set(fts_ranked[:TOP_K])
 
     scope = infer_scope(question)
-    strong = _select_context(db, combined, strong_ids, scope)
+    strong = _select_context(db, combined, strong_ids, scope, question)
 
     if not strong:
         related = _related_documents(db, [cid for cid, _score in combined[:RELATED_FALLBACK]])
@@ -153,7 +172,8 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
             inferred_years=scope.years,
         )
 
-    context_rows = _load_chunk_context(db, [cid for cid, _ in strong])
+    selected = _expand_neighbors(db, [cid for cid, _ in strong], question)
+    context_rows = _load_chunk_context(db, selected)
     if not context_rows:
         return Answer(question=question, text="확인 가능한 자료가 부족합니다.", withheld=True,
                        inferred_years=scope.years)
@@ -190,7 +210,9 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
         i + 1: " ".join(row["text"].split())[:MAX_CONTEXT_CHARS]
         for i, row in enumerate(context_rows)
     }
-    verified = verify_sentences(data.get("sentences") or [], source_text)
+    verified = verify_sentences(
+        data.get("sentences") or [], source_text, _support_text(context_rows, source_text),
+    )
 
     if not verified.survived:
         related = [RelatedDoc(r["doc_id"], r["filename"], r["path"]) for r in context_rows[:3]]
@@ -296,15 +318,24 @@ def _reciprocal_rank_fusion(
 
 def _select_context(
     db: Database, combined: list[tuple[int, float]], strong_ids: set[int], scope: QueryScope,
+    question: str = "",
 ) -> list[tuple[int, float]]:
     """RRF 순위에서 실제로 컨텍스트에 넣을 TOP_K를 고른다.
 
-    순서가 중요하다. 먼저 탐색 범위를 EXPLORATION_WINDOW로 못 박는다 —
-    그 아래는 걸러서 생긴 빈 자리를 메우는 데도 쓰지 않는다. 그다음 연도로
-    좁힌다. 대표본 판정과 연도 필터는 '완전히 사라지면 되돌린다' — 근거가
-    아예 없어지는 것보다는 약한 근거라도 보류 판단에 넘기는 편이 낫다
-    (모를 때 모른다고 답하는 건 이 함수가 아니라 그다음 단계, LLM과 후속
-    검증의 몫이다).
+    순서가 중요하다.
+      ① 탐색 범위를 EXPLORATION_WINDOW로 못 박는다 — 그 아래는 걸러서
+         생긴 빈 자리를 메우는 데도 쓰지 않는다.
+      ② 대표본 판정(파일 단위 중복 제거)
+      ③ 내용 단위 근접 중복 축약 — 파일은 다른데 내용이 같은 버전 사본을
+         접는다. 다양성 상한보다 **먼저** 해야 한다. 나중에 하면 같은 내용
+         여덟 건이 각자 다른 문서라는 이유로 상한을 통과해 버린다.
+      ④ 연도 필터
+      ⑤ 규칙 재정렬 — 상한을 적용하기 전에 해야 좋은 후보가 살아남는다.
+      ⑥ 문서당 상한 → TOP_K
+
+    ②③④는 '완전히 사라지면 되돌린다' — 근거가 아예 없어지는 것보다는
+    약한 근거라도 보류 판단에 넘기는 편이 낫다(모를 때 모른다고 답하는 건
+    이 함수가 아니라 그다음 단계, LLM과 후속 검증의 몫이다).
     """
     eligible = [(cid, score) for cid, score in combined if cid in strong_ids][:EXPLORATION_WINDOW]
     if not eligible:
@@ -317,16 +348,29 @@ def _select_context(
     if narrowed:
         eligible = narrowed
 
-    if scope.has_year:
-        matching = [
-            (cid, s) for cid, s in eligible
-            if meta.get(cid, {}).get("eff_year") in scope.years
-        ]
-        if matching:
-            eligible = matching
+    candidates = [
+        Candidate(
+            chunk_id=cid, score=score,
+            text=meta.get(cid, {}).get("text", ""),
+            filename=meta.get(cid, {}).get("filename", ""),
+            eff_year=meta.get(cid, {}).get("eff_year"),
+        )
+        for cid, score in eligible
+    ]
+    collapsed = collapse_near_duplicates(candidates)
+    if collapsed:
+        candidates = collapsed
 
-    doc_of = {cid: meta[cid]["doc_id"] for cid, _s in eligible if cid in meta}
-    return _cap_per_document(eligible, doc_of)[:TOP_K]
+    if scope.has_year:
+        matching = [c for c in candidates if c.eff_year in scope.years]
+        if matching:
+            candidates = matching
+
+    candidates = rerank(candidates, question)
+
+    ranked = [(c.chunk_id, c.score) for c in candidates]
+    doc_of = {cid: meta[cid]["doc_id"] for cid, _s in ranked if cid in meta}
+    return _cap_per_document(ranked, doc_of)[:TOP_K]
 
 
 def _cap_per_document(
@@ -343,6 +387,122 @@ def _cap_per_document(
         if doc_id is not None:
             counts[doc_id] = counts.get(doc_id, 0) + 1
     return kept
+
+
+def _distinctive_terms(db: Database, terms: list[str]) -> list[str]:
+    """질문 낱말 중 실제로 주제를 가르는 것만 남긴다.
+
+    "계약관리 업무는 어떤 순서로 처리해?"에서 주제를 가르는 낱말은
+    '계약관리'뿐이다. '업무'는 이 코퍼스의 거의 모든 문서에 들어 있어
+    아무것도 가르지 못한다 — 그런 낱말로 관련성을 재면 무엇이든 통과한다.
+    실측으로 겪었다: 무관한 월간실적보고 문단이 '업무' 하나로 이웃 확장을
+    통과해, 모델이 그 표 숫자로 계약관리 질문에 답해 버렸다.
+
+    문서 빈도로 가른다 — 절반 넘는 문서에 나오는 낱말은 버린다. 전부
+    흔한 낱말뿐이면 원래 목록을 그대로 쓴다(가릴 근거가 없으면 막지 않는다).
+    """
+    if not terms:
+        return []
+    total = db.con.execute(
+        "SELECT COUNT(DISTINCT doc_id) AS n FROM chunks"
+    ).fetchone()["n"]
+    if not total:
+        return terms
+
+    distinctive = []
+    for term in terms:
+        # 대조와 같은 어간으로 센다. 조사가 붙은 "업무는"으로 세면 드물다고
+        # 나오지만, 실제로 대조에 쓰이는 "업무"는 어느 공문에나 있다.
+        hits = db.con.execute(
+            "SELECT COUNT(DISTINCT doc_id) AS n FROM chunks WHERE text LIKE ?",
+            (f"%{korean.stem(term)}%",),
+        ).fetchone()["n"]
+        if hits <= total * GENERIC_TERM_RATIO:
+            distinctive.append(term)
+    return distinctive or terms
+
+
+def _support_text(context_rows: list, source_text: dict[int, str]) -> dict[int, str]:
+    """사실 확인에 쓸 본문 — 인용한 조각 + **같은 문서의** 다른 컨텍스트 조각.
+
+    이웃 확장으로 넣어 준 조각을 검증에서 근거로 인정하기 위한 것이다.
+    같은 문서로 한정하는 것이 핵심이다 — 컨텍스트 전체를 허용하면 A 문서를
+    인용하고 B 문서의 숫자를 쓴 문장까지 통과해 검증이 무의미해진다.
+    """
+    by_document: dict[int, list[str]] = {}
+    for index, row in enumerate(context_rows, start=1):
+        by_document.setdefault(row["doc_id"], []).append(source_text[index])
+    return {
+        index: " ".join(by_document[row["doc_id"]])
+        for index, row in enumerate(context_rows, start=1)
+    }
+
+
+def _expand_neighbors(db: Database, chunk_ids: list[int], question: str = "") -> list[int]:
+    """고른 조각의 바로 앞뒤 조각을 함께 넣는다. 원래 순위 순서는 유지한다.
+
+    조각 하나가 스스로를 설명하지 못할 때가 있다 — 표에는 숫자만 있고
+    그 표가 무엇에 관한 것인지는 앞 문단에만 적혀 있다. 이웃을 붙이면
+    모델이 표의 숫자를 질문과 이어 붙일 수 있다.
+
+    **질문과 무관한 이웃은 붙이지 않는다.** 이웃 확장은 관련 있는 근거를
+    설명 가능하게 만드는 장치이지, 무관한 근거를 풍부해 보이게 하는 것이
+    아니다. 실측으로 겪었다 — "계약관리 처리 순서"에 월간실적보고의 표가
+    걸렸을 때, 그 표만 있으면 모델이 "자료가 부족하다"고 옳게 유보했는데
+    이웃 문단을 붙여 주자 그 숫자로 답을 만들어 냈다.
+
+    이웃은 원래 조각 바로 뒤에 놓는다. 앞에 두면 컨텍스트 번호([1],[2]…)가
+    검색 순위와 어긋나 모델이 "가장 관련 있는 것부터"라는 감을 잃는다.
+    """
+    if not chunk_ids:
+        return []
+    terms = _distinctive_terms(db, korean.tokens(question))
+
+    marks = ", ".join("?" * len(chunk_ids))
+    anchors = db.con.execute(
+        f"SELECT id, doc_id, ordinal FROM chunks WHERE id IN ({marks})", chunk_ids
+    ).fetchall()
+    position = {row["id"]: (row["doc_id"], row["ordinal"]) for row in anchors}
+
+    wanted: list[tuple[int, int]] = []
+    for chunk_id in chunk_ids:
+        if chunk_id not in position:
+            continue
+        doc_id, ordinal = position[chunk_id]
+        for offset in range(-NEIGHBOR_SPAN, NEIGHBOR_SPAN + 1):
+            if offset:
+                wanted.append((doc_id, ordinal + offset))
+    if not wanted:
+        return chunk_ids
+
+    conditions = " OR ".join("(doc_id = ? AND ordinal = ?)" for _ in wanted)
+    params = [value for pair in wanted for value in pair]
+    found = db.con.execute(
+        f"SELECT id, doc_id, ordinal, text FROM chunks WHERE {conditions}", params
+    ).fetchall()
+    by_position = {
+        (row["doc_id"], row["ordinal"]): row["id"]
+        for row in found
+        if not terms or any(korean.contains(row["text"], t) for t in terms)
+    }
+
+    out: list[int] = []
+    seen: set[int] = set()
+    for chunk_id in chunk_ids:
+        if chunk_id not in seen:
+            out.append(chunk_id)
+            seen.add(chunk_id)
+        if chunk_id not in position:
+            continue
+        doc_id, ordinal = position[chunk_id]
+        for offset in range(-NEIGHBOR_SPAN, NEIGHBOR_SPAN + 1):
+            if not offset:
+                continue
+            neighbour = by_position.get((doc_id, ordinal + offset))
+            if neighbour is not None and neighbour not in seen:
+                out.append(neighbour)
+                seen.add(neighbour)
+    return out
 
 
 def _representative_chunk_ids(db: Database, chunk_ids: list[int]) -> set[int]:
@@ -367,12 +527,15 @@ def _load_chunk_meta(db: Database, chunk_ids: list[int]) -> dict[int, dict]:
         return {}
     marks = ", ".join("?" * len(chunk_ids))
     rows = db.con.execute(
-        f"SELECT c.id AS chunk_id, c.doc_id, d.eff_year FROM chunks c "
-        f"JOIN documents d ON d.id = c.doc_id WHERE c.id IN ({marks})",
+        f"SELECT c.id AS chunk_id, c.doc_id, c.text, d.eff_year, d.filename "
+        f"FROM chunks c JOIN documents d ON d.id = c.doc_id WHERE c.id IN ({marks})",
         chunk_ids,
     ).fetchall()
     return {
-        row["chunk_id"]: {"doc_id": row["doc_id"], "eff_year": row["eff_year"]}
+        row["chunk_id"]: {
+            "doc_id": row["doc_id"], "eff_year": row["eff_year"],
+            "text": row["text"], "filename": row["filename"],
+        }
         for row in rows
     }
 

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...db import Database
-from ...jobs import AskRunner
+from ...jobs import AskRunner, WarmupRunner
 from ...search.rag import Answer
 from .. import theme
 from ..widgets import (
@@ -54,6 +54,9 @@ class AskView(QWidget):
         self.db = db
         self._runner = AskRunner(db.path, self)
         self._runner.done.connect(self._on_answer)
+        # 사용자가 질문을 타이핑하는 동안 생성 모델을 미리 올려 둔다.
+        # 첫 질문만 유독 느린 것은 거의 전부 모델 적재 때문이다.
+        self._warmup = WarmupRunner(self)
         self._current_question_id: int | None = None
 
         outer = QVBoxLayout(self)
@@ -112,6 +115,8 @@ class AskView(QWidget):
     # ── 준비 상태 ───────────────────────────────────────────────────
     def refresh(self) -> None:
         ready, message = self._readiness()
+        if ready:
+            self._warmup.start()   # 한 번만 돈다
         self.input.setEnabled(ready and not self._runner.running)
         self.send.setEnabled(ready and not self._runner.running)
         # 답할 수 있어도 알릴 것이 있으면 띄운다 — 색인에서 빠진 자료가

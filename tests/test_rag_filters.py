@@ -211,3 +211,88 @@ def test_result_never_exceeds_top_k(db: Database):
 
 def test_no_eligible_candidates_yields_empty_result(db: Database):
     assert _select_context(db, [(1, 0.9)], set(), NO_SCOPE) == []
+
+
+# ── 근접 중복 축약 (R7) ─────────────────────────────────────────────
+
+def test_identical_tables_across_versioned_files_do_not_fill_the_context(db: Database):
+    """R6에서 넘어온 실패 그대로.
+
+    "계약관리 처리 순서"를 물었는데 근거 8건이 전부 같은 [집계] 표였다.
+    파일이 여덟 개(_부장수정·_송부·_최종…)라 hash 중복 제거도, 문서당
+    상한도 통과했다. 내용으로 접어야 잡힌다.
+    """
+    source_id = db.add_source("/자료")
+    table = "[집계]\n구분\t1분기\t2분기\n처리건수\t41\t38"
+
+    dupes = []
+    for i, suffix in enumerate(
+        ["부장수정", "송부", "최종", "최종2", "수정", "복사본", "진짜최종", "초안"]
+    ):
+        doc_id = add_doc(db, source_id, f"2025_월간실적보고_{suffix}.xlsx",
+                         year=2025, hash_=f"h{i}")   # 파일마다 hash가 다르다
+        dupes.append(add_chunk(db, doc_id, table))
+
+    # 진짜 관련 있는 다른 문서 하나 — 순위는 아래지만 자리를 얻어야 한다.
+    real = add_chunk(
+        db, add_doc(db, source_id, "2025_계약관리_용역계약서.pdf", year=2025, hash_="real"),
+        "계약관리 용역계약 체결 절차",
+    )
+
+    combined = [(cid, 0.02 - i * 0.001) for i, cid in enumerate(dupes)]
+    combined.append((real, 0.005))
+
+    result = _select_context(
+        db, combined, set(dupes) | {real}, NO_SCOPE, "계약관리 업무는 어떤 순서로 처리해?",
+    )
+    kept = [cid for cid, _s in result]
+
+    assert sum(1 for cid in kept if cid in dupes) == 1, "같은 표가 여러 자리를 차지했다"
+    assert real in kept, "중복본에 밀려 진짜 관련 문서가 근거에서 빠졌다"
+
+
+def test_generic_words_are_not_treated_as_distinctive(db: Database):
+    """'업무'처럼 어느 문서에나 있는 낱말로 관련성을 재면 무엇이든 통과한다.
+
+    실측으로 겪었다 — 무관한 월간실적보고 문단이 '업무' 하나로 이웃 확장을
+    통과해, 모델이 그 표 숫자로 계약관리 질문에 답해 버렸다.
+    """
+    from app.search.rag import _distinctive_terms
+
+    source_id = db.add_source("/자료")
+    for i in range(6):
+        add_chunk(db, add_doc(db, source_id, f"문서{i}.hwp", hash_=f"h{i}"),
+                  f"본 문서는 업무 중 {i}단계에서 작성되었다")
+    add_chunk(db, add_doc(db, source_id, "계약.hwp", hash_="c"), "계약관리 절차")
+
+    kept = _distinctive_terms(db, ["업무는", "계약관리"])
+    assert "계약관리" in kept
+    assert "업무는" not in kept
+
+
+def test_distinctive_filter_keeps_everything_when_all_words_are_common(db: Database):
+    """전부 흔한 낱말뿐이면 가릴 근거가 없다 — 막지 않는다."""
+    from app.search.rag import _distinctive_terms
+
+    source_id = db.add_source("/자료")
+    for i in range(4):
+        add_chunk(db, add_doc(db, source_id, f"문서{i}.hwp", hash_=f"h{i}"), "업무 자료")
+
+    assert _distinctive_terms(db, ["업무는", "자료를"]) == ["업무는", "자료를"]
+
+
+def test_query_term_match_is_promoted_within_the_selection(db: Database):
+    """재정렬이 실제 선별 흐름 안에서 동작하는지 — 단위 시험만으로는 부족하다."""
+    source_id = db.add_source("/자료")
+    off_topic = add_chunk(
+        db, add_doc(db, source_id, "무관.hwp", year=2025, hash_="a"), "전혀 다른 주제"
+    )
+    on_topic = add_chunk(
+        db, add_doc(db, source_id, "계약.hwp", year=2025, hash_="b"), "계약관리 처리 절차"
+    )
+
+    result = _select_context(
+        db, [(off_topic, 0.02), (on_topic, 0.019)],
+        {off_topic, on_topic}, NO_SCOPE, "계약관리는 어떻게 처리해?",
+    )
+    assert [cid for cid, _s in result][0] == on_topic
