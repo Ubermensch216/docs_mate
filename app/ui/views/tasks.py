@@ -47,6 +47,7 @@ from ..widgets import (
     Badge,
     Card,
     EmptyState,
+    EvidenceDrawer,
     FlowGrid,
     InfoDot,
     ListRow,
@@ -63,6 +64,7 @@ from ..widgets import (
     open_original,
     view_title,
 )
+from . import evidence
 from .cycle_format import cycle_headline, cycle_note, next_occurrence_text, parse_months
 
 STAGES = [
@@ -147,7 +149,18 @@ class TasksView(QWidget):
             page = Page(max_width=theme.CONTENT_MAX_W)
             self.pages[key] = page
             self.stack.addWidget(page)
-        outer.addWidget(self.stack, 1)
+
+        # 근거 서랍은 질문 화면과 같은 위젯이다(계획서 §29). 업무 화면에서는
+        # 상주가 아니라 부를 때만 연다 — 여기서는 근거가 늘 있는 것이 아니라
+        # 어떤 주장(설명·주기·단계)을 짚었을 때 생긴다.
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self.stack, 1)
+        self.drawer = EvidenceDrawer()
+        self.drawer.open_original.connect(self._open)
+        body.addWidget(self.drawer)
+        outer.addLayout(body, 1)
 
         self.column = self.list_page.column
         self.refresh()
@@ -168,15 +181,20 @@ class TasksView(QWidget):
 
     def _switch(self, key: str) -> None:
         self._tab = key
+        # 다른 탭의 주장을 짚어 둔 근거가 그대로 남으면, 지금 보는 화면의
+        # 근거인 줄 알고 읽는다. 화면이 바뀌면 서랍도 닫는다.
+        self.drawer.dismiss()
         self.stack.setCurrentWidget(self.pages[key])
 
     def open_task(self, task_id: int) -> None:
         self._task_id = task_id
         self._tab = READ   # 새 업무를 열면 언제나 "무엇부터 읽나"부터다
+        self.drawer.dismiss()
         self.refresh()
 
     def back(self) -> None:
         self._task_id = None
+        self.drawer.dismiss()
         self.refresh()
 
     # ── 목록 ────────────────────────────────────────────────────────
@@ -373,7 +391,19 @@ class TasksView(QWidget):
 
         # 설명은 상태보다 아래다. 위에 두면 제목과 붙어 두 줄 제목처럼 읽힌다.
         if row["description"]:
-            self.head.addWidget(muted_label(row["description"], small=True))
+            about = QHBoxLayout()
+            about.setSpacing(theme.SP_SM)
+            about.addWidget(muted_label(row["description"], small=True), 1)
+            basis = evidence.for_task(self.db, row, docs)
+            if basis:
+                about.addWidget(
+                    self._evidence_button(
+                        f"근거 {len(basis)}건",
+                        "이 이름과 설명을 어느 문서에서 얻었는지 봅니다",
+                        lambda: self._show_evidence(basis, "업무 설명의 근거"),
+                    )
+                )
+            self.head.addLayout(about)
 
         cycle = self.db.task_cycle(task_id)
         self.tabs.set_count(READ, "먼저 읽을 문서", len(picks))
@@ -418,8 +448,13 @@ class TasksView(QWidget):
             name = QPushButton(f"📄 {pick['filename']}")
             name.setObjectName("CardTitle")
             name.setCursor(Qt.CursorShape.PointingHandCursor)
-            name.setToolTip(f"{pick['path']}\n클릭하면 원본을 엽니다")
-            name.clicked.connect(lambda _=False, p=pick["path"]: self._open(p))
+            name.setToolTip(f"{pick['path']}\n클릭하면 이 문서의 첫 대목을 옆에서 봅니다")
+            name.clicked.connect(
+                lambda _=False, d=pick["doc_id"], r=pick["reason"]: self._show_evidence(
+                    evidence.from_documents(self.db, [d], note=f"고른 이유 · {r}"),
+                    "먼저 읽을 문서",
+                )
+            )
             top.addWidget(name)
             top.addStretch(1)
             when = QLabel(_when(pick))
@@ -553,6 +588,16 @@ class TasksView(QWidget):
         edit.clicked.connect(lambda: self._edit_cycle(task_id))
         row.addWidget(edit)
 
+        basis = evidence.for_cycle(self.db, cycle)
+        if basis:
+            row.addWidget(
+                self._evidence_button(
+                    f"근거 {len(basis)}건",
+                    "이 주기를 어느 문서의 시점에서 읽었는지 봅니다",
+                    lambda: self._show_evidence(basis, "반복 주기의 근거"),
+                )
+            )
+
         if cycle is None or cycle["kind"] != "none":
             none = QPushButton("반복 아님")
             none.setObjectName("Quiet")
@@ -646,11 +691,18 @@ class TasksView(QWidget):
             line.row.addWidget(name)
 
             if step["filename"]:
+                # 원본을 바로 열지 않는다. 한글이 뜨는 데 몇 초가 걸리고 화면을
+                # 떠나야 하므로, 확인이 아니라 이탈이 된다(계획서 §14).
+                # 근거를 옆에서 먼저 보여주고 원본 열기는 그 안의 버튼으로 둔다.
                 doc_btn = QPushButton(f"📄 {step['filename']}")
                 doc_btn.setObjectName("Link")
                 doc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                doc_btn.setToolTip(f"{step['path']}\n클릭하면 원본을 엽니다")
-                doc_btn.clicked.connect(lambda _=False, p=step["path"]: self._open(p))
+                doc_btn.setToolTip(f"{step['path']}\n클릭하면 이 단계의 근거를 옆에서 봅니다")
+                doc_btn.clicked.connect(
+                    lambda _=False, s=step: self._show_evidence(
+                        evidence.for_step(self.db, s), "처리 단계의 근거"
+                    )
+                )
                 line.row.addWidget(doc_btn)
             line.row.addStretch(1)
 
@@ -962,6 +1014,20 @@ class TasksView(QWidget):
 
     def _open(self, path: str) -> None:
         open_original(self, self.db, path)
+
+    # ── 근거 (계획서 §14·§29) ───────────────────────────────────────
+    def _evidence_button(self, text: str, tip: str, slot) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("Link")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(tip)
+        button.clicked.connect(lambda _=False: slot())
+        return button
+
+    def _show_evidence(self, items, title: str) -> None:
+        """근거를 옆 서랍에 편다. 빈 목록도 연다 — 조용히 아무 일도 일어나지
+        않으면 사용자는 버튼이 고장 난 줄 안다. 서랍이 없다고 말해 준다."""
+        self.drawer.show_evidence(items, title)
 
 
 class SplitDialog(QDialog):

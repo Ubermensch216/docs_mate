@@ -7,6 +7,7 @@
 from .common import (
     Badge,
     Card,
+    ElidedLabel,
     EmptyState,
     EvidenceChip,
     IconChoice,
@@ -35,6 +36,7 @@ from .timeline_grid import TimelineGrid, legend_text
 __all__ = [
     "Badge",
     "Card",
+    "ElidedLabel",
     "EmptyState",
     "Evidence",
     "EvidenceDrawer",

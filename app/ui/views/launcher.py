@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -32,7 +31,14 @@ from PySide6.QtWidgets import (
 from ...db import registry
 from ...db.registry import ProjectEntry
 from .. import theme
-from ..widgets import Badge, EmptyState, clear_layout, muted_label, view_title
+from ..widgets import (
+    Badge,
+    ElidedLabel,
+    EmptyState,
+    clear_layout,
+    muted_label,
+    view_title,
+)
 
 
 class LauncherDialog(QDialog):
@@ -218,7 +224,9 @@ class _ProjectRow(QFrame):
         head.addStretch(1)
         column.addLayout(head)
 
-        column.addWidget(_ElidedPath(str(entry.path)))
+        where = ElidedLabel(str(entry.path))
+        where.setObjectName("Mono")
+        column.addWidget(where)
 
         bottom = QHBoxLayout()
         bottom.setSpacing(theme.SP_SM)
@@ -248,29 +256,3 @@ class _ProjectRow(QFrame):
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 — Qt 규약
         self._on_open(self._entry)
         super().mouseDoubleClickEvent(event)
-
-
-class _ElidedPath(QLabel):
-    """긴 경로를 가운데를 접어서 보여준다.
-
-    경로는 띄어쓰기가 없는 한 낱말이라 QLabel의 줄바꿈이 듣지 않는다. 그냥
-    두면 줄 하나가 창보다 넓어져 오른쪽 버튼들이 화면 밖으로 밀린다
-    (실제로 그렇게 나왔다). 접는 자리는 가운데다 — 드라이브와 폴더 이름이
-    양 끝에 있고, 사용자가 프로젝트를 구별하는 단서도 그 양 끝이다.
-    """
-
-    def __init__(self, text: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("Mono")
-        self._full = text
-        self.setToolTip(text)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._render()
-
-    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
-        super().resizeEvent(event)
-        self._render()
-
-    def _render(self) -> None:
-        width = max(self.width(), 80)
-        self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, width))

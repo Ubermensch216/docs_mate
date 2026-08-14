@@ -138,6 +138,43 @@ def muted_label(text: str, small: bool = False, wrap: bool = True) -> QLabel:
     return label
 
 
+class ElidedLabel(QLabel):
+    """긴 한 낱말(파일명·경로)을 폭에 맞춰 가운데를 접어 보여준다.
+
+    파일명과 경로에는 띄어쓰기가 없어 QLabel의 줄바꿈이 듣지 않는다. 그냥
+    두면 줄 하나가 칸보다 넓어져 옆의 버튼을 화면 밖으로 밀거나(프로젝트
+    목록에서 실제로 그랬다) 글자가 소리 없이 잘린다.
+
+    접는 자리는 가운데다 — `2025_행정사무감사_..._최종2.docx`처럼 구별에
+    필요한 단서가 양 끝에 있다. 전체는 툴팁으로 남긴다.
+    """
+
+    def __init__(self, text: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full = text
+        self.setToolTip(text)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._render()
+
+    def setText(self, text: str) -> None:  # noqa: N802 — Qt 규약
+        self._full = text
+        self.setToolTip(text)
+        self._render()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        super().resizeEvent(event)
+        self._render()
+
+    def _render(self) -> None:
+        width = max(self.width(), 80)
+        QLabel.setText(
+            self, self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, width)
+        )
+
+
 def note_label(text: str) -> QLabel:
     """화면 설명 문구. 목록 항목과 같은 회색 글씨로 흘리면 내용과 섞여 읽힌다.
 

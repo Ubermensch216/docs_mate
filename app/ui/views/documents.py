@@ -13,20 +13,28 @@ AI가 틀렸을 때 돌아올 수 있는 곳. 이 화면이 없으면 사용자�
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
@@ -34,11 +42,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...core import status
 from ...db import Database, representative_predicate
 from ...jobs import SummaryRunner
 from ...search import fts
 from .. import theme
 from ..widgets import (
+    Badge,
     EmptyState,
     InfoDot,
     UnknownBlock,
@@ -85,6 +95,9 @@ DUP_COUNT = (
     "(SELECT COUNT(*) FROM documents y "
     " WHERE y.hash = d.hash AND d.hash IS NOT NULL AND y.missing_since IS NULL)"
 )
+# 미분류 = 어느 업무에도 붙지 않은 문서. repo.unclassified_count()와 같은 조건을
+# 써야 한다 — 상단 집계와 목록이 다른 수를 말하면 둘 다 못 믿는다.
+UNCLASSIFIED = "NOT EXISTS(SELECT 1 FROM task_docs td WHERE td.doc_id = d.id)"
 
 
 class DocumentsView(QWidget):
@@ -164,6 +177,14 @@ class DocumentsView(QWidget):
         self.documents_only.setToolTip("그림·실행파일 등 분석 대상이 아닌 파일을 숨깁니다")
         self.documents_only.stateChanged.connect(self.refresh)
         row.addWidget(self.documents_only)
+
+        # 미분류는 실패가 아니라 정상이다(어느 업무에도 안 붙는 문서는 늘 있다).
+        # 다만 "내 업무 문서인데 안 붙은 것"을 찾아 배정하려면 그것만 모아
+        # 볼 수 있어야 한다 — 500행 목록에서 눈으로 고를 수는 없다.
+        self.unclassified_only = QCheckBox("미분류만 보기")
+        self.unclassified_only.setToolTip("어느 업무에도 배정되지 않은 문서만 봅니다")
+        self.unclassified_only.stateChanged.connect(self.refresh)
+        row.addWidget(self.unclassified_only)
         row.addStretch(1)
         return row
 
@@ -241,6 +262,10 @@ class DocumentsView(QWidget):
             parts.append(f"원본 없음 {counts['missing']:,}건")
         self.summary.setText(" · ".join(parts) + f"   (표시 {len(rows):,}행)")
 
+        # 건수를 거르개에 붙여 둔다. 누르기 전에 규모를 알아야 누를지 말지
+        # 정할 수 있다(일정 화면 탭에서 쓴 것과 같은 규칙).
+        self.unclassified_only.setText(f"미분류만 보기 ({self.db.unclassified_count():,})")
+
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             self._fill(r, row)
@@ -264,6 +289,8 @@ class DocumentsView(QWidget):
             where.append("d.parse_status != 'skipped'")
         if self.collapse_dups.isChecked():
             where.append(REPRESENTATIVE)
+        if self.unclassified_only.isChecked():
+            where.append(UNCLASSIFIED)
 
         if term:
             # trigram FTS는 3글자 이상만 처리한다. 짧은 질의는 LIKE로 폴백한다.
@@ -349,6 +376,7 @@ class DocumentsView(QWidget):
 
         self._add_summary(row)
         self._add_when(row)
+        self._add_tasks(row)
         self._add_facts(row)
         self._add_trouble(row)
 
@@ -403,15 +431,30 @@ class DocumentsView(QWidget):
 
     def _add_when(self, row) -> None:
         """시점과 그 근거. 이 제품에서 가장 중요한 검증 지점이다."""
-        self.detail.addWidget(section_title("시점"))
+        head = QHBoxLayout()
+        head.setSpacing(theme.SP_SM)
+        head.addWidget(section_title("시점"))
+        head.addWidget(Badge.state(status.of_document_date(row)))
+        head.addStretch(1)
+        self.detail.addLayout(head)
 
         if not row["eff_date"]:
-            self.detail.addWidget(
-                UnknownBlock(
-                    "이 문서가 언제 작성됐는지 확인할 단서를 찾지 못했습니다. "
-                    "본문·파일명·문서 속성·폴더 어디에도 날짜가 없습니다."
+            if row["date_decided_by"] == "user":
+                # 사람이 '모름'으로 확정한 것과 시스템이 못 찾은 것은 다르다.
+                self.detail.addWidget(
+                    muted_label(
+                        "담당자가 ‘날짜 모름’으로 확정했습니다. 다시 분석해도 "
+                        "이 판단은 바뀌지 않습니다."
+                    )
                 )
-            )
+            else:
+                self.detail.addWidget(
+                    UnknownBlock(
+                        "이 문서가 언제 작성됐는지 확인할 단서를 찾지 못했습니다. "
+                        "본문·파일명·문서 속성·폴더 어디에도 날짜가 없습니다."
+                    )
+                )
+            self._add_date_actions(row)
             return
 
         kind = row["eff_date_kind"]
@@ -449,6 +492,104 @@ class DocumentsView(QWidget):
                         small=True,
                     )
                 )
+
+        if row["date_decided_by"] == "user":
+            self.detail.addWidget(
+                muted_label(
+                    f"{status.symbol(status.CONFIRMED)} 담당자가 확정한 시점입니다. "
+                    f"다시 분석해도 바뀌지 않습니다.",
+                    small=True,
+                )
+            )
+        self._add_date_actions(row)
+
+    def _add_date_actions(self, row) -> None:
+        """추정 옆에는 늘 교정 수단이 있어야 한다 (계획서 §11).
+
+        후보를 보여 주기만 하고 고를 수 없으면, 사용자는 틀린 것을 발견하고도
+        할 수 있는 일이 없다 — 그 순간 화면 전체가 '읽을거리'가 된다.
+        """
+        button = QPushButton("시점 고치기" if row["eff_date"] else "시점 직접 지정")
+        button.setObjectName("Quiet")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(lambda _=False, i=row["id"]: self._edit_date(i))
+        self.detail.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
+
+    def _edit_date(self, doc_id: int) -> None:
+        row = self.db.document(doc_id)
+        if row is None:
+            return
+        picked = _DateDialog.run(self, row, self.db.dates(doc_id))
+        if picked is None:
+            return
+        value, precision, kind = picked
+        self.db.set_document_date(doc_id, value, precision=precision, kind=kind)
+        self.refresh()
+
+    # ── 상세 (업무 배정) ────────────────────────────────────────────
+    def _add_tasks(self, row) -> None:
+        """이 문서가 어느 업무에 속하는가, 그리고 그것을 여기서 고칠 수 있는가.
+
+        미분류 문서를 배정하는 자리를 업무 화면에 두면 순서가 거꾸로다 —
+        사용자는 '이 파일이 어느 업무지?'를 문서를 보면서 판단한다.
+        """
+        if row["parse_status"] == "skipped":
+            return
+
+        self.detail.addWidget(_divider())
+        self.detail.addWidget(section_title("업무"))
+
+        links = self.db.document_tasks(row["id"])
+        if not links:
+            self.detail.addWidget(
+                UnknownBlock(
+                    "어느 업무에도 배정되지 않았습니다. 업무와 무관한 문서라면 "
+                    "그대로 두어도 됩니다."
+                )
+            )
+        for link in links:
+            line = QHBoxLayout()
+            line.setSpacing(theme.SP_SM)
+            name = muted_label(link["name"])
+            name.setToolTip(link["name"])
+            line.addWidget(name, 1)
+            if link["is_primary"]:
+                line.addWidget(Badge("대표", "ok"))
+            drop = QPushButton("배정 해제")
+            drop.setObjectName("Quiet")
+            drop.setCursor(Qt.CursorShape.PointingHandCursor)
+            drop.setToolTip("이 업무에서만 뗍니다. 문서와 분석 결과는 그대로입니다.")
+            drop.clicked.connect(
+                lambda _=False, t=link["id"], d=row["id"]: self._detach_task(t, d)
+            )
+            line.addWidget(drop)
+            self.detail.addLayout(line)
+
+        assign = QPushButton("＋ 업무에 배정")
+        assign.setObjectName("Quiet")
+        assign.setCursor(Qt.CursorShape.PointingHandCursor)
+        assign.setToolTip("한 문서가 여러 업무에 속할 수 있습니다")
+        assign.clicked.connect(lambda _=False, i=row["id"]: self._assign_task(i))
+        self.detail.addWidget(assign, alignment=Qt.AlignmentFlag.AlignLeft)
+
+    def _assign_task(self, doc_id: int) -> None:
+        taken = {link["id"] for link in self.db.document_tasks(doc_id)}
+        choices = [task for task in self.db.tasks() if task["id"] not in taken]
+        if not choices:
+            self.summary.setText(
+                "⚠ 배정할 업무가 없습니다. 업무 화면에서 업무를 먼저 만들거나, "
+                "이미 이 문서가 모든 업무에 배정돼 있습니다."
+            )
+            return
+        task_id = _TaskPicker.run(self, choices)
+        if task_id is None:
+            return
+        self.db.assign_document(task_id, doc_id)
+        self.refresh()
+
+    def _detach_task(self, task_id: int, doc_id: int) -> None:
+        self.db.detach_document(task_id, doc_id)
+        self.refresh()
 
     def _add_facts(self, row) -> None:
         self.detail.addWidget(_divider())
@@ -502,6 +643,215 @@ class DocumentsView(QWidget):
             subprocess.Popen(["explorer", "/select,", str(path)])
         else:
             _launch(target)
+
+
+class _DateDialog(QDialog):
+    """시점 교정 — 후보 중에서 고르거나, 직접 적거나, ‘모름’으로 확정한다.
+
+    후보를 라디오로 내놓는 이유: 날짜를 손으로 다시 치게 하면 오타가 들어오고,
+    무엇보다 **근거와의 연결이 끊긴다.** 후보를 고르면 그 후보의 출처(본문·
+    파일명·문서 속성…)를 그대로 유지하므로, 확정한 뒤에도 "무엇을 보고
+    정했는지"가 화면에 남는다.
+
+    ‘날짜 모름’도 하나의 판단이다. 빈칸으로 두는 것과 달리 다음 재분석이
+    다시 추정해 덮어쓰지 않는다(repo.set_document_date 참고).
+    """
+
+    def __init__(self, parent: QWidget, row, candidates) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("시점 고치기")
+        self.setMinimumWidth(460)
+
+        column = QVBoxLayout(self)
+        column.setSpacing(theme.SP_MD)
+        column.addWidget(muted_label(row["filename"]))
+
+        self._group = QButtonGroup(self)
+        self._choices: dict[QRadioButton, tuple[str | None, str, str]] = {}
+
+        ordered = sorted(candidates, key=lambda c: _kind_order(c["kind"]))
+        for candidate in ordered:
+            label = KIND_LABEL.get(candidate["kind"], candidate["kind"])
+            precision = PRECISION_LABEL.get(candidate["precision"], "")
+            text = f"{label}   {_value_text(candidate['value'], candidate['precision'])}"
+            if precision:
+                text += f" ({precision})"
+            if candidate["raw"]:
+                text += f"   “{candidate['raw'][:24]}”"
+            if candidate["locator"]:
+                text += f"   · {candidate['locator']}"
+            button = QRadioButton(text)
+            if candidate["kind"] == row["eff_date_kind"]:
+                button.setChecked(True)
+            self._group.addButton(button)
+            self._choices[button] = (
+                candidate["value"], candidate["precision"], candidate["kind"]
+            )
+            column.addWidget(button)
+
+        if not ordered:
+            column.addWidget(
+                muted_label("자료에서 찾은 날짜 후보가 없습니다. 직접 적어 주세요.",
+                            small=True)
+            )
+
+        self.manual = QRadioButton("직접 입력")
+        self._group.addButton(self.manual)
+        column.addWidget(self.manual)
+
+        self.text = QLineEdit()
+        self.text.setPlaceholderText("2024-03-11  ·  2024-03  ·  2024")
+        self.text.textEdited.connect(lambda _t: self.manual.setChecked(True))
+        column.addWidget(self.text)
+
+        self.unknown = QRadioButton("날짜 모름으로 확정")
+        self.unknown.setToolTip("다시 분석해도 날짜를 추정하지 않습니다")
+        self._group.addButton(self.unknown)
+        column.addWidget(self.unknown)
+
+        if not ordered and not row["eff_date"]:
+            self.manual.setChecked(True)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        column.addWidget(buttons)
+
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._group.buttonToggled.connect(lambda *_: self._revalidate())
+        self.text.textChanged.connect(self._revalidate)
+        self._revalidate()
+
+    def choice(self) -> tuple[str | None, str, str] | None:
+        """(value, precision, kind). 고른 것이 없거나 입력이 틀리면 None."""
+        if self.unknown.isChecked():
+            return (None, "day", "user")
+        if self.manual.isChecked():
+            parsed = _parse_date_text(self.text.text())
+            if parsed is None:
+                return None
+            return (parsed[0], parsed[1], "user")
+        for button, value in self._choices.items():
+            if button.isChecked():
+                return value
+        return None
+
+    def _revalidate(self) -> None:
+        self._ok.setEnabled(self.choice() is not None)
+
+    @classmethod
+    def run(cls, parent: QWidget, row, candidates) -> tuple[str | None, str, str] | None:
+        dialog = cls(parent, row, candidates)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.choice()
+
+
+class _TaskPicker(QDialog):
+    """이 문서를 어느 업무에 붙일지 고른다.
+
+    업무가 수십 개가 되면 목록만으로는 못 찾으므로 이름 거르기를 함께 둔다.
+    """
+
+    def __init__(self, parent: QWidget, tasks) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("업무에 배정")
+        self.setMinimumWidth(460)
+
+        column = QVBoxLayout(self)
+        column.setSpacing(theme.SP_MD)
+        column.addWidget(
+            muted_label("이 문서를 어느 업무의 자료로 볼지 고르세요. "
+                        "한 문서가 여러 업무에 속해도 됩니다.")
+        )
+
+        self.filter = QLineEdit()
+        self.filter.setPlaceholderText("업무 이름으로 거르기")
+        self.filter.textChanged.connect(self._apply_filter)
+        column.addWidget(self.filter)
+
+        self.list = QListWidget()
+        for task in tasks:
+            item = QListWidgetItem(f"{task['name']}   ({task['doc_count']:,}건)")
+            item.setData(Qt.ItemDataRole.UserRole, task["id"])
+            item.setData(Qt.ItemDataRole.UserRole + 1, task["name"])
+            self.list.addItem(item)
+        self.list.itemDoubleClicked.connect(lambda _item: self.accept())
+        column.addWidget(self.list)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        column.addWidget(buttons)
+
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self._ok.setEnabled(False)
+        self.list.itemSelectionChanged.connect(
+            lambda: self._ok.setEnabled(bool(self.list.selectedItems()))
+        )
+
+    def _apply_filter(self, term: str) -> None:
+        needle = term.strip()
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            name = item.data(Qt.ItemDataRole.UserRole + 1) or ""
+            item.setHidden(bool(needle) and needle not in name)
+
+    @classmethod
+    def run(cls, parent: QWidget, tasks) -> int | None:
+        dialog = cls(parent, tasks)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        items = dialog.list.selectedItems()
+        return items[0].data(Qt.ItemDataRole.UserRole) if items else None
+
+
+def _parse_date_text(text: str) -> tuple[str, str] | None:
+    """사람이 적은 날짜를 (YYYY-MM-DD, precision)으로 바꾼다.
+
+    적는 방식을 하나로 강요하지 않는다 — 2024.3.11 / 2024-03-11 / 2024년 3월을
+    모두 받는다. 못 알아들을 때는 지어내지 않고 None을 돌려 확인 버튼을 잠근다.
+
+    빠진 자리는 01로 채우고 무엇이 확실한지는 precision이 말한다. 자료에서
+    뽑은 후보와 같은 형식이어야 한다(core/dating.py).
+    """
+    parts = [p for p in re.split(r"[^0-9]+", text.strip()) if p]
+    if not parts or len(parts) > 3:
+        return None
+    try:
+        numbers = [int(p) for p in parts]
+    except ValueError:                       # pragma: no cover — 숫자만 남겨 두었다
+        return None
+
+    year = numbers[0]
+    if not 1900 <= year <= 2200:
+        return None
+    if len(numbers) == 1:
+        return f"{year:04d}-01-01", "year"
+
+    month = numbers[1]
+    if not 1 <= month <= 12:
+        return None
+    if len(numbers) == 2:
+        return f"{year:04d}-{month:02d}-01", "month"
+
+    day = numbers[2]
+    try:
+        return date(year, month, day).isoformat(), "day"
+    except ValueError:
+        return None
+
+
+def _value_text(value: str, precision: str) -> str:
+    if precision == "year":
+        return f"{value[:4]}년"
+    if precision == "month":
+        return f"{value[:4]}.{value[5:7]}"
+    return value
 
 
 def _elide_middle(text: str, limit: int = 46) -> str:

@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
-from .common import clear_layout, muted_label, section_title
+from .common import ElidedLabel, clear_layout, muted_label, section_title
 
 
 @dataclass(slots=True)
@@ -142,7 +142,9 @@ class EvidenceDrawer(QFrame):
         column.setContentsMargins(theme.SP_SM, theme.SP_SM, theme.SP_SM, theme.SP_SM)
         column.setSpacing(theme.SP_XS)
 
-        name = muted_label(f"[{item.mark}] {item.label}" if item.mark else item.label)
+        # 파일명은 띄어쓰기가 없어 줄바꿈이 듣지 않는다 — 접지 않으면 서랍
+        # 밖으로 잘려 나간다(실제 자료의 긴 파일명에서 확인).
+        name = ElidedLabel(f"[{item.mark}] {item.label}" if item.mark else item.label)
         name.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600;")
         name.setToolTip(item.path or item.label)
         column.addWidget(name)

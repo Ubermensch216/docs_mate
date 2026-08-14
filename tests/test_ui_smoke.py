@@ -708,8 +708,11 @@ def test_task_detail_how_year_selector_switches_steps(make_window, db, qapp):
     assert not any("제출_2025" in t for t in texts)
 
 
-def test_task_detail_how_step_opens_original_on_click(make_window, db, tmp_path):
-    """단계에 붙은 문서를 눌러 원본을 열 수 있어야 한다."""
+def test_task_detail_how_step_shows_evidence_before_the_original(make_window, db, tmp_path):
+    """단계에 붙은 문서를 누르면 **먼저 근거**가 열리고, 원본은 그 안에서 연다.
+
+    원본을 바로 띄우면 확인이 아니라 이탈이다 — 한글이 뜨는 데 몇 초가 걸리고
+    화면을 떠난다(계획서 §14의 Claim → Evidence → Original)."""
     task_id = _seed_task(db)
     real_file = tmp_path / "실제문서.hwp"
     real_file.write_text("dummy", encoding="utf-8")
@@ -724,16 +727,24 @@ def test_task_detail_how_step_opens_original_on_click(make_window, db, tmp_path)
     _seed_steps(db, task_id, 2025, [
         {"ordinal": 1, "label": "제출", "month": 10, "day_hint": "10월", "doc_id": doc_id},
     ])
+    db.replace_sections(doc_id, [("paragraph", 1, "1쪽", "2025년 제출 자료입니다")])
     view = make_window(db).views["tasks"]
     view.open_task(task_id)
-
-    opened = []
-    view._open = lambda p: opened.append(p)
+    view._switch("how")
 
     for button in _button_widgets(view):
         if "실제문서.hwp" in button.text():
             button.click()
             break
+
+    assert not view.drawer.isHidden()      # 창을 띄우지 않는 시험이라 isVisible은 못 쓴다
+    assert any("2025년 제출 자료입니다" in text for text in _labels(view.drawer))
+
+    opened = []
+    view.drawer.open_original.connect(opened.append)
+    for button in _button_widgets(view.drawer):
+        if button.text() == "원본 열기":
+            button.click()
     assert opened == [str(real_file)]
 
 
