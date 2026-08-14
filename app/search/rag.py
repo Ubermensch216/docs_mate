@@ -244,6 +244,8 @@ def ask(db: Database, question: str, client: OllamaClient | None = None,
 # ── 내부 ────────────────────────────────────────────────────────────
 
 _ANSWERED = re.compile(r'"answered"\s*:\s*(true|false)')
+# 모델이 문장 안에 직접 적은 인용 표시. 우리가 다시 붙이기 전에 걷어 낸다.
+_CITATION_MARK = re.compile(r"\s*\[\s*\d+(?:\s*,\s*\d+)*\s*\]")
 _SENTENCE = re.compile(
     r'\{\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"sources"\s*:\s*\[([^\]]*)\]\s*\}'
 )
@@ -304,8 +306,14 @@ def _compose_answer(
                     snippet=" ".join(row["text"].split())[:SNIPPET_CHARS],
                 ))
             marks.append(renumbered[source])
+        # 모델이 sources를 따로 내면서 문장 안에도 [1]을 적는 일이 잦다
+        # (v2 프롬프트의 습관이 남아 있다). 그대로 두고 우리 번호를 붙이면
+        # "…제출하였다[1][1]"이 된다. 문장에서 표시를 걷어 내고, 번호는
+        # 검증을 통과한 sources로만 다시 매긴다 — 모델이 쓴 번호는 검증
+        # 전 번호라 재정렬 뒤에는 어차피 틀린 값이다.
+        body = _CITATION_MARK.sub("", sentence.text).rstrip()
         suffix = "".join(f"[{m}]" for m in sorted(set(marks)))
-        parts.append(f"{sentence.text}{suffix}" if suffix else sentence.text)
+        parts.append(f"{body}{suffix}" if suffix else body)
 
     return " ".join(parts), citations
 

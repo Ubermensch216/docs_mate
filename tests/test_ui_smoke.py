@@ -16,7 +16,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
 
 from app.db import Database  # noqa: E402
 from app.ui import theme  # noqa: E402
@@ -570,7 +570,9 @@ def test_ask_view_renders_answer_with_citations_and_feedback(make_window, db):
     texts = _labels(view)
     buttons = _button_widgets(view)
     assert any("6건이 확인됩니다" in t for t in texts)
-    assert any("행감자료.hwp" in b.text() for b in buttons)
+    # 근거는 답변 카드 안이 아니라 옆 패널에 상주한다 — 답이 주인공이고
+    # 근거가 세로 공간을 잡아먹지 않아야 한다.
+    assert any("행감자료.hwp" in t for t in _labels(view.drawer))
     assert any("도움됨" in b.text() for b in buttons)
     assert any("부정확" in b.text() for b in buttons)
 
@@ -619,13 +621,20 @@ def test_ask_view_asking_shows_a_waiting_state(make_window, db, monkeypatch):
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
 
-    monkeypatch.setattr(view._runner, "start", lambda q: True)
+    monkeypatch.setattr(view._runner, "start", lambda q, scope=None: True)
     view.input.setText("질문 있음")
     view._ask()
 
     texts = _labels(view)
-    assert any("찾아보는 중" in t for t in texts)
+    assert any("답을 만들고 있습니다" in t for t in texts), texts
+    assert any("질문 있음" in t for t in texts), "무엇을 묻는 중인지 보여야 한다"
     assert not view.send.isEnabled()
+
+    # 값 없는(indeterminate) 막대라야 한다 — 남은 시간을 아는 척하면
+    # 거짓 진행률이 된다. 지금 어느 단계인지 우리는 실제로 모른다.
+    from PySide6.QtWidgets import QProgressBar
+    bar = view.findChild(QProgressBar)
+    assert bar is not None and bar.minimum() == 0 and bar.maximum() == 0
 
 
 def _seed_steps(db: Database, task_id: int, year: int, steps: list[dict]) -> None:
@@ -1050,22 +1059,35 @@ def test_ask_answer_renders_citation_marks_as_links(make_window, db):
     assert any('<a href="1"' in t for t in labels), labels
 
 
-def test_clicking_a_citation_opens_that_evidence_in_the_drawer(make_window, db):
+def test_evidence_panel_shows_every_citation_beside_the_answer(make_window, db):
+    """근거는 답 옆에 상주한다 — 열고 닫게 하면 결국 아무도 안 누른다."""
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
     view._render_answer(_answered())
 
-    assert view.drawer.isHidden()
-    view._show_citation("2")
-
-    body = "\n".join(
-        l.text() for l in view.drawer.findChildren(QLabel) if l.text()
-    )
     assert not view.drawer.isHidden()
+    body = chr(10).join(_labels(view.drawer))
+    assert "2025_행감_제출자료.hwp" in body
     assert "정수장_운영현황.xlsx" in body
-    assert "운영현황 표" in body
-    assert "2025_행감_제출자료.hwp" not in body, "누른 근거만 보여줘야 한다"
+
+
+def test_clicking_a_citation_points_at_that_evidence(make_window, db):
+    """상주 패널에서는 [n]이 '열기'가 아니라 '이것'이라고 짚어 주는 일이다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+    view._render_answer(_answered())
+
+    view._show_citation("2")
+    picked = [
+        w for w in view.drawer.findChildren(QFrame)
+        if w.objectName() == "EvidenceEntry" and w.property("picked")
+    ]
+    assert len(picked) == 1
+    assert "정수장_운영현황.xlsx" in chr(10).join(
+        l.text() for l in picked[0].findChildren(QLabel) if l.text()
+    )
 
 
 def test_answer_text_with_angle_brackets_is_not_swallowed_as_markup(make_window, db):
@@ -1084,7 +1106,7 @@ def test_new_question_closes_the_previous_evidence(make_window, db, monkeypatch)
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
-    monkeypatch.setattr(view._runner, "start", lambda q: True)
+    monkeypatch.setattr(view._runner, "start", lambda q, scope=None: True)
 
     view._render_answer(_answered())
     view._show_citation("1")
@@ -1179,3 +1201,135 @@ def test_scope_selection_survives_a_refresh(make_window, db):
     view.task_scope.setCurrentIndex(view.task_scope.findData(task_id))
     view.refresh()
     assert view.task_scope.currentData() == task_id
+
+
+# ── 3분할 레이아웃 (질문 화면 재설계) ───────────────────────────────
+
+def test_ask_screen_is_three_columns_with_evidence_on_the_side(make_window, db, qapp):
+    """답이 주인공이고 근거는 그 옆에 붙는다.
+
+    전에는 전부 세로로 쌓여 근거 목록이 공간을 다 먹고 정작 답이 화면
+    아래로 밀려났다.
+    """
+    from app.search.rag import Answer, Citation
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    window = make_window(db)
+    window.resize(1400, 860)
+    window.show()
+    qapp.processEvents()
+    window.go("ask")
+    view = window.views["ask"]
+
+    view._render_answer(Answer(
+        question="질문", text="답변입니다.[1]", withheld=False,
+        citations=[Citation(1, 1, "근거.hwp", "3쪽", r"D:\자료\근거.hwp", "인용문")],
+    ))
+    qapp.processEvents()
+
+    assert view.guide.isVisible()
+    assert not view.drawer.isHidden()
+    # 가운데가 가장 넓어야 한다 — 주인공이기 때문이다.
+    assert view.result_area.width() > view.guide.width()
+    assert view.result_area.width() > view.drawer.width()
+
+
+def test_guide_column_collapses_on_a_narrow_window(make_window, db, qapp):
+    """셋을 다 욱여넣으면 답변 칸이 두세 낱말마다 줄바꿈되는 폭이 된다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    window = make_window(db)
+    window.show()
+
+    window.resize(1800, 860)
+    qapp.processEvents()
+    window.go("ask")
+    view = window.views["ask"]
+    qapp.processEvents()
+    assert view.guide.isVisible()
+
+    window.resize(*theme.WINDOW_MIN)
+    qapp.processEvents()
+    assert not view.guide.isVisible()
+
+
+def test_question_guide_uses_chips(make_window, db):
+    from PySide6.QtWidgets import QPushButton
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    chips = [b for b in view.guide.findChildren(QPushButton)
+             if b.objectName() == "Chip"]
+    assert len(chips) >= len(view.EXAMPLES if hasattr(view, "EXAMPLES") else [])
+    assert chips, "질문 가이드가 칩으로 보여야 한다"
+
+
+def test_recent_questions_appear_as_chips(make_window, db):
+    """이미 물어본 것을 다시 꺼내 쓸 수 있어야 한다."""
+    from PySide6.QtWidgets import QPushButton
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    db.save_question("작년 행감 자료 뭐야?", "답", "[]", False, "m")
+    view = make_window(db).views["ask"]
+    view.refresh()
+
+    labels = [b.toolTip() for b in view.guide.findChildren(QPushButton)
+              if b.objectName() == "Chip"]
+    assert "작년 행감 자료 뭐야?" in labels
+
+
+def test_clicking_a_chip_asks_that_question(make_window, db, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    captured = {}
+    monkeypatch.setattr(view._runner, "start",
+                        lambda q, scope=None: captured.update(q=q) or True)
+    chip = next(b for b in view.guide.findChildren(QPushButton)
+                if b.objectName() == "Chip")
+    chip.click()
+    assert captured["q"] == chip.toolTip()
+
+
+# ── 글자 크기 하한 ──────────────────────────────────────────────────
+
+def test_small_text_size_never_goes_below_the_readable_floor():
+    """'작게'를 골랐을 때 부기 글자가 11px이 되어 한글이 뭉개졌다.
+
+    알파벳은 10px에서도 읽히지만 한글은 자소 셋이 한 칸에 들어가 획이
+    서로 붙는다. 비율로 줄이되 하한 아래로는 내리지 않는다.
+    """
+    for size in theme.TEXT_SIZE_ORDER:
+        scale = theme.TEXT_SIZES[size]
+        for base in (theme.FS_TITLE, theme.FS_SECTION, theme.FS_BODY, theme.FS_SMALL):
+            assert theme._scaled(base, scale) >= theme.MIN_FONT_PX
+
+
+def test_stylesheet_has_no_font_size_below_the_floor():
+    """실제로 칠해지는 값에도 하한이 걸려야 한다 — 계산식만 고쳐서는 부족하다."""
+    import re
+
+    for size in theme.TEXT_SIZE_ORDER:
+        sizes = [int(px) for px in re.findall(r"font-size:\s*(\d+)px", theme.stylesheet(size))]
+        assert sizes, "스타일시트에 글자 크기가 없다"
+        assert min(sizes) >= theme.MIN_FONT_PX, f"{size}: {min(sizes)}px"
+
+
+def test_settings_preview_matches_the_size_actually_applied():
+    """설정 화면이 '(11px)'이라고 적어 놓고 실제로는 12px이면 거짓말이다."""
+    for size in theme.TEXT_SIZE_ORDER:
+        assert theme.body_px(size) == theme._scaled(
+            theme.FS_BODY, theme.TEXT_SIZES[size]
+        )
+
+
+def test_larger_sizes_still_grow():
+    """하한을 넣었다고 '크게'가 안 커지면 접근성 설정이 무의미해진다."""
+    assert theme.body_px("large") > theme.body_px("medium") > theme.body_px("small")

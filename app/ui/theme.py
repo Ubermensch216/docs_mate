@@ -215,8 +215,28 @@ TEXT_SIZE_LABELS = {"small": "작게", "medium": "보통", "large": "크게"}
 TEXT_SIZE_ICONS = {"small": "text-small", "medium": "text-medium", "large": "text-large"}
 
 
+# 한글 글자는 자소 셋이 한 칸에 들어간다. 이 아래로 내려가면 획이 서로
+# 붙어 뭉개진다 — 알파벳은 10px에서도 읽히지만 한글은 아니다. '작게'를
+# 골랐을 때 부기 글자가 11px이 되어 실제로 뭉개졌다.
+MIN_FONT_PX = 12
+
+
+def _scaled(base: int, scale: float) -> int:
+    """글자 크기를 비율로 줄이되 읽을 수 있는 하한 아래로는 내리지 않는다.
+
+    '작게'가 모든 글자를 똑같이 줄이지는 못한다는 뜻이다 — 본문·제목은
+    줄어들고 부기는 그대로다. 안 읽히는 글자를 만드는 것보다 낫다.
+    """
+    return max(MIN_FONT_PX, round(base * scale))
+
+
 def normalize_text_size(value: str | None) -> str:
     return value if value in TEXT_SIZES else "medium"
+
+
+def body_px(text_size: str) -> int:
+    """설정 화면이 '(13px)'처럼 보여줄 실제 본문 크기. 하한을 함께 반영한다."""
+    return _scaled(FS_BODY, TEXT_SIZES[normalize_text_size(text_size)])
 
 
 # ── 간격·크기 (4px 그리드) ──────────────────────────────────────────
@@ -263,10 +283,10 @@ def stylesheet(text_size: str = "medium") -> str:
     먼저 도움이 되는 것은 대비 반전보다 글자 크기다.
     """
     scale = TEXT_SIZES[normalize_text_size(text_size)]
-    body = round(FS_BODY * scale)
-    small = round(FS_SMALL * scale)
-    section = round(FS_SECTION * scale)
-    title = round(FS_TITLE * scale)
+    body = _scaled(FS_BODY, scale)
+    small = _scaled(FS_SMALL, scale)
+    section = _scaled(FS_SECTION, scale)
+    title = _scaled(FS_TITLE, scale)
     return f"""
     * {{
         font-family: {FONT_FAMILY};
@@ -400,6 +420,57 @@ def stylesheet(text_size: str = "medium") -> str:
         background: {SURFACE};
         border-left: 1px solid {BORDER_STRONG};
     }}
+    /* 근거 한 건. [n]을 누르면 그 항목만 짚어 준다 — 패널에 근거가
+       여럿일 때 눈으로 찾는 수고를 없앤다. */
+    QFrame#EvidenceEntry {{
+        border: 1px solid transparent;
+        border-radius: {RADIUS_SM}px;
+    }}
+    QFrame#EvidenceEntry[picked="true"] {{
+        background: {PRIMARY_SOFT};
+        border: 1px solid {PRIMARY};
+    }}
+
+    /* 질문 가이드 칩. 누르면 그 질문이 입력창에 들어간다. */
+    QPushButton#Chip {{
+        background: {BG};
+        border: 1px solid {BORDER_STRONG};
+        border-radius: 14px;
+        padding: {SP_XS}px {SP_MD}px;
+        color: {TEXT_MUTED};
+        text-align: left;
+    }}
+    QPushButton#Chip:hover {{
+        border-color: {PRIMARY};
+        color: {PRIMARY};
+        background: {PRIMARY_SOFT};
+    }}
+
+    /* 답변 카드 — 이 화면의 주인공이라 테두리를 한 단계 세운다. */
+    QFrame#AnswerCard {{
+        background: {BG};
+        border: 1px solid {BORDER_STRONG};
+        border-radius: {RADIUS}px;
+    }}
+    QLabel#AnswerBody {{
+        color: {TEXT};
+        line-height: 170%;
+    }}
+
+    /* 생성 중 표시. 가느다란 막대 하나면 충분하다 — 회전하는 그림이나
+       말풍선은 이 제품의 성격에 맞지 않는다. */
+    QProgressBar#Thinking {{
+        background: {SURFACE_ALT};
+        border: none;
+        border-radius: 2px;
+        height: 3px;
+        text-align: center;
+    }}
+    QProgressBar#Thinking::chunk {{
+        background: {PRIMARY};
+        border-radius: 2px;
+    }}
+
     /* 인용문은 '이 앱이 쓴 말'이 아니라 '문서에 있던 말'이다 — 따옴표만으로는
        약해서 옅은 판에 얹고 왼쪽에 띠를 둔다. */
     QLabel#EvidenceQuote {{

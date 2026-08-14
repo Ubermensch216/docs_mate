@@ -43,6 +43,7 @@ class Evidence:
     snippet: str = ""     # 실제 인용문
     path: str = ""        # 원본 경로
     note: str = ""        # "왜 이것이 근거인가" (선택)
+    mark: int | None = None   # 답변의 [n] 번호. 있으면 highlight()로 짚을 수 있다.
 
 
 class EvidenceDrawer(QFrame):
@@ -85,11 +86,14 @@ class EvidenceDrawer(QFrame):
         self.column.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
+        self._scroll = scroll
+        self._entries: dict[int, QWidget] = {}
 
     # ── 조작 ────────────────────────────────────────────────────────
     def show_evidence(self, items: list[Evidence], title: str = "근거") -> None:
         """근거를 채우고 연다. 빈 목록이면 그렇다고 말한다 — 조용히 닫지 않는다."""
         clear_layout(self.column)
+        self._entries = {}
         self._title.setText(f"{title} {len(items)}건" if items else title)
 
         if not items:
@@ -99,9 +103,31 @@ class EvidenceDrawer(QFrame):
         for index, item in enumerate(items):
             if index:
                 self.column.addWidget(_separator())
-            self.column.addWidget(self._entry(item))
+            widget = self._entry(item)
+            self.column.addWidget(widget)
+            if item.mark:
+                self._entries[item.mark] = widget
 
         self.show()
+
+    def highlight(self, mark: int) -> bool:
+        """그 번호의 근거를 강조하고 보이는 곳으로 스크롤한다.
+
+        상주 패널에서는 [n]을 눌러도 패널이 새로 열리지 않는다 — 이미 다
+        보이고 있다. 대신 "이것"이라고 짚어 줘야 사용자가 눈으로 찾는
+        수고를 하지 않는다.
+        """
+        found = False
+        for key, widget in self._entries.items():
+            on = key == mark
+            widget.setProperty("picked", on)
+            # 속성으로 스타일을 바꿨으면 다시 칠하라고 알려야 한다.
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            if on:
+                self._scroll.ensureWidgetVisible(widget)
+                found = True
+        return found
 
     def dismiss(self) -> None:
         self.hide()
@@ -109,12 +135,14 @@ class EvidenceDrawer(QFrame):
 
     # ── 구성 ────────────────────────────────────────────────────────
     def _entry(self, item: Evidence) -> QWidget:
-        holder = QWidget()
+        holder = QFrame()
+        holder.setObjectName("EvidenceEntry")
+        holder.setProperty("picked", False)
         column = QVBoxLayout(holder)
-        column.setContentsMargins(0, 0, 0, 0)
+        column.setContentsMargins(theme.SP_SM, theme.SP_SM, theme.SP_SM, theme.SP_SM)
         column.setSpacing(theme.SP_XS)
 
-        name = muted_label(item.label)
+        name = muted_label(f"[{item.mark}] {item.label}" if item.mark else item.label)
         name.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600;")
         name.setToolTip(item.path or item.label)
         column.addWidget(name)

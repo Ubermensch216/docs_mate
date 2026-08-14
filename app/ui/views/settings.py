@@ -151,7 +151,7 @@ class SettingsDialog(QDialog):
                     theme.TEXT_SIZE_ICONS[key],
                     theme.TEXT_SIZE_LABELS[key],
                     f"본문 글자를 {theme.TEXT_SIZE_LABELS[key]} 봅니다"
-                    f" ({round(theme.FS_BODY * theme.TEXT_SIZES[key])}px)",
+                    f" ({theme.body_px(key)}px)",
                 )
                 for key in theme.TEXT_SIZE_ORDER
             ],

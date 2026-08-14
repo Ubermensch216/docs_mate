@@ -15,9 +15,10 @@ from app.search.rag import GEN_TOKEN_BUDGET, _compose_answer, _salvage_ask_respo
 from app.search.verify import VerifiedSentence
 
 
-def row(chunk_id: int, doc_id: int, filename: str, locator: str = "1문단") -> dict:
+def row(chunk_id: int, doc_id: int, filename: str, locator: str = "1문단",
+        text: str = "근거가 된 본문") -> dict:
     return {"chunk_id": chunk_id, "doc_id": doc_id, "filename": filename,
-            "locator": locator, "path": f"/자료/{filename}"}
+            "locator": locator, "path": f"/자료/{filename}", "text": text}
 
 
 # ── _compose_answer ─────────────────────────────────────────────────
@@ -115,3 +116,32 @@ def test_salvage_unescapes_the_recovered_text():
 def test_token_budget_was_raised_past_the_measured_failure_point():
     """실측: num_predict=500이 문장 배열 스키마에서 잘림을 냈다. 늘렸는지 못 박는다."""
     assert GEN_TOKEN_BUDGET > 500
+
+
+def test_citation_marks_written_by_the_model_are_not_duplicated():
+    """실측으로 잡은 결함: 화면에 "…제출하였다[1][1]"이 나왔다.
+
+    모델은 sources를 따로 내면서도 문장 안에 [1]을 적는 버릇이 있다(v2
+    프롬프트의 잔재). 그대로 두고 우리 번호를 붙이면 표시가 겹친다.
+    """
+    rows = [row(1, 10, "a.hwp")]
+    sentences = [VerifiedSentence(text="자료를 제출하였다[1]", sources=[1])]
+    text, _citations = _compose_answer(sentences, rows)
+    assert text == "자료를 제출하였다[1]"
+
+
+def test_model_written_marks_are_replaced_not_trusted():
+    """모델이 쓴 번호는 검증·재정렬 전 번호라 그대로 두면 틀린 곳을 가리킨다."""
+    rows = [row(1, 10, "a.hwp"), row(2, 20, "b.hwp"), row(3, 30, "c.hwp")]
+    # 3번만 살아남았다고 가정 — 모델은 [3]이라 썼지만 화면에는 [1]이어야 한다.
+    sentences = [VerifiedSentence(text="셋째 근거로 답한다[3]", sources=[3])]
+    text, citations = _compose_answer(sentences, rows)
+    assert text == "셋째 근거로 답한다[1]"
+    assert citations[0].filename == "c.hwp"
+
+
+def test_multi_number_marks_are_stripped():
+    rows = [row(1, 10, "a.hwp"), row(2, 20, "b.hwp")]
+    sentences = [VerifiedSentence(text="두 근거를 합쳤다[1, 2]", sources=[1, 2])]
+    text, _c = _compose_answer(sentences, rows)
+    assert text == "두 근거를 합쳤다[1][2]"
