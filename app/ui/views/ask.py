@@ -17,6 +17,7 @@ import re
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLineEdit,
     QPushButton,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from ...db import Database
 from ...jobs import AskRunner, WarmupRunner
+from ...search.query import QueryScope
 from ...search.rag import Answer
 from .. import theme
 from ..widgets import (
@@ -95,6 +97,19 @@ class AskView(QWidget):
         title_row.addStretch(1)
         outer.addLayout(title_row)
 
+        # 범위 — 화면에서 고른 것이 질문 문장에서 읽어 낸 것을 이긴다.
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(theme.SP_SM)
+        self.task_scope = QComboBox()
+        self.task_scope.setToolTip("특정 업무의 자료만 근거로 삼습니다")
+        self.year_scope = QComboBox()
+        self.year_scope.setToolTip("특정 연도의 자료만 근거로 삼습니다")
+        scope_row.addWidget(muted_label("범위", small=True))
+        scope_row.addWidget(self.task_scope)
+        scope_row.addWidget(self.year_scope)
+        scope_row.addStretch(1)
+        outer.addLayout(scope_row)
+
         row = QHBoxLayout()
         row.setSpacing(theme.SP_SM)
         self.input = QLineEdit()
@@ -132,6 +147,7 @@ class AskView(QWidget):
     # ── 준비 상태 ───────────────────────────────────────────────────
     def refresh(self) -> None:
         ready, message = self._readiness()
+        self._reload_scopes()
         if ready:
             self._warmup.start()   # 한 번만 돈다
         self.input.setEnabled(ready and not self._runner.running)
@@ -143,6 +159,43 @@ class AskView(QWidget):
 
         if not self._runner.running:
             self._render_idle_or_empty(ready)
+
+    def _reload_scopes(self) -> None:
+        """업무·연도 목록을 다시 채운다. 사용자가 고른 값은 살린다.
+
+        분석이 진행되면서 업무가 늘어나므로 목록도 함께 자란다 — 그때마다
+        선택이 '전체'로 되돌아가면 사용자는 방금 고른 범위를 잃는다.
+        """
+        for combo, items, label in (
+            (self.task_scope, self._task_items(), "전체 업무"),
+            (self.year_scope, self._year_items(), "전체 기간"),
+        ):
+            chosen = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(label, None)
+            for text, value in items:
+                combo.addItem(text, value)
+            index = combo.findData(chosen)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _task_items(self) -> list[tuple[str, int]]:
+        return [(row["name"], row["id"]) for row in self.db.tasks()]
+
+    def _year_items(self) -> list[tuple[str, int]]:
+        rows = self.db.con.execute(
+            "SELECT DISTINCT eff_year AS y FROM documents "
+            "WHERE eff_year IS NOT NULL AND missing_since IS NULL ORDER BY y DESC"
+        ).fetchall()
+        return [(f"{row['y']}년", row["y"]) for row in rows]
+
+    def _chosen_scope(self) -> QueryScope:
+        year = self.year_scope.currentData()
+        return QueryScope(
+            years=[year] if year is not None else [],
+            task_id=self.task_scope.currentData(),
+        )
 
     def _readiness(self) -> tuple[bool, str]:
         """답할 수 있는가, 그리고 **무엇을 아직 못 보는가**.
@@ -193,7 +246,7 @@ class AskView(QWidget):
         question = self.input.text().strip()
         if not question or self._runner.running:
             return
-        self._runner.start(question)
+        self._runner.start(question, self._chosen_scope())
         self.input.setEnabled(False)
         self.send.setEnabled(False)
         # 지난 답의 근거가 서랍에 남아 있으면 새 답의 근거로 오해한다.

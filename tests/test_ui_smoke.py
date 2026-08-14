@@ -1016,3 +1016,166 @@ def test_warmup_runs_only_once_even_when_started_repeatedly():
     started = [runner.start() for _ in range(3)]
     runner.stop()
     assert started.count(True) == 1
+
+
+# ── 인용 링크·근거 서랍·후속 질문 (R9) ──────────────────────────────
+
+def _answered(**overrides):
+    from app.search.rag import Answer, Citation
+
+    base = dict(
+        question="2025년 행정사무감사 때 뭘 제출했어?",
+        text="수질검사 결과를 제출했다.[1] 정수장 운영현황도 함께 냈다.[2]",
+        withheld=False,
+        citations=[
+            Citation(index=1, doc_id=1, filename="2025_행감_제출자료.hwp",
+                     locator="3쪽", path=r"D:\자료\a.hwp", snippet="수질검사 결과"),
+            Citation(index=2, doc_id=2, filename="정수장_운영현황.xlsx",
+                     locator="'운영'!B4", path=r"D:\자료\b.xlsx", snippet="운영현황 표"),
+        ],
+        inferred_years=[2025],
+    )
+    base.update(overrides)
+    return Answer(**base)
+
+
+def test_ask_answer_renders_citation_marks_as_links(make_window, db):
+    """[1]을 눌러 근거로 갈 수 있어야 한다 — 목록을 따로 읽고 짝을 맞추게 하지 않는다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+    view._render_answer(_answered())
+
+    labels = [l.text() for l in view.findChildren(QLabel) if l.text()]
+    assert any('<a href="1"' in t for t in labels), labels
+
+
+def test_clicking_a_citation_opens_that_evidence_in_the_drawer(make_window, db):
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+    view._render_answer(_answered())
+
+    assert view.drawer.isHidden()
+    view._show_citation("2")
+
+    body = "\n".join(
+        l.text() for l in view.drawer.findChildren(QLabel) if l.text()
+    )
+    assert not view.drawer.isHidden()
+    assert "정수장_운영현황.xlsx" in body
+    assert "운영현황 표" in body
+    assert "2025_행감_제출자료.hwp" not in body, "누른 근거만 보여줘야 한다"
+
+
+def test_answer_text_with_angle_brackets_is_not_swallowed_as_markup(make_window, db):
+    """문서에서 온 문장에 <, & 가 섞여도 답이 깨지면 안 된다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+    view._render_answer(_answered(text="A<B 그리고 C&D 였다.[1]"))
+
+    labels = [l.text() for l in view.findChildren(QLabel) if l.text()]
+    assert any("A&lt;B" in t and "C&amp;D" in t for t in labels), labels
+
+
+def test_new_question_closes_the_previous_evidence(make_window, db, monkeypatch):
+    """지난 답의 근거가 서랍에 남아 있으면 새 답의 근거로 오해한다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+    monkeypatch.setattr(view._runner, "start", lambda q: True)
+
+    view._render_answer(_answered())
+    view._show_citation("1")
+    assert not view.drawer.isHidden()
+
+    view.input.setText("다른 질문")
+    view._ask()
+    assert view.drawer.isHidden()
+
+
+def test_followup_buttons_build_complete_standalone_questions(make_window, db):
+    """이전 대화를 기억하는 대신 완성된 새 질문을 만든다 (기준서 §17)."""
+    from app.ui.views.ask import _followup_questions
+
+    suggestions = _followup_questions(_answered())
+    assert suggestions
+    for label, question in suggestions:
+        assert label and question
+        # 지시대명사만으로 이루어진 질문은 나중에 그 답을 검증할 수 없다.
+        assert "그럼" not in question
+        assert len(question) > len(label)
+
+
+def test_followup_shifts_the_year_to_the_previous_one(make_window, db):
+    from app.ui.views.ask import _followup_questions
+
+    suggestions = dict(
+        (label, question) for label, question in _followup_questions(_answered())
+    )
+    assert "2024년" in suggestions["지난해 자료와 비교"]
+
+
+def test_withheld_answer_offers_no_followups(make_window, db):
+    """답하지 못한 것에 '이어서 물어보기'를 붙이면 있지도 않은 답을 있는 것처럼 만든다."""
+    from app.ui.views.ask import _followup_questions
+
+    withheld = _answered(withheld=True, text="확인 가능한 자료가 부족합니다.",
+                         citations=[], inferred_years=[])
+    assert _followup_questions(withheld) == []
+
+
+# ── 범위 드롭다운 (R9) ──────────────────────────────────────────────
+
+def test_scope_dropdowns_default_to_everything(make_window, db):
+    """기본은 전체다 — 사용자가 고르기 전에 몰래 좁히지 않는다."""
+    source_id = db.add_source(r"D:\자료")
+    _seed_chunked_doc(db, source_id)
+    view = make_window(db).views["ask"]
+
+    assert view.task_scope.currentData() is None
+    assert view.year_scope.currentData() is None
+    assert view._chosen_scope().years == []
+    assert view._chosen_scope().task_id is None
+
+
+def test_scope_dropdowns_list_tasks_and_years(make_window, db):
+    task_id = _seed_task(db)
+    view = make_window(db).views["ask"]
+    view.refresh()
+
+    tasks = [view.task_scope.itemData(i) for i in range(view.task_scope.count())]
+    years = [view.year_scope.itemData(i) for i in range(view.year_scope.count())]
+    assert task_id in tasks
+    assert 2023 in years
+
+
+def test_choosing_a_scope_is_passed_to_the_engine(make_window, db, monkeypatch):
+    task_id = _seed_task(db)
+    view = make_window(db).views["ask"]
+    view.refresh()
+
+    captured = {}
+    monkeypatch.setattr(
+        view._runner, "start",
+        lambda q, scope=None: captured.update(question=q, scope=scope) or True,
+    )
+    view.task_scope.setCurrentIndex(view.task_scope.findData(task_id))
+    view.year_scope.setCurrentIndex(view.year_scope.findData(2023))
+    view.input.setText("뭘 제출했어?")
+    view._ask()
+
+    assert captured["scope"].task_id == task_id
+    assert captured["scope"].years == [2023]
+
+
+def test_scope_selection_survives_a_refresh(make_window, db):
+    """분석이 진행되며 목록이 자란다 — 그때마다 선택이 풀리면 안 된다."""
+    task_id = _seed_task(db)
+    view = make_window(db).views["ask"]
+    view.refresh()
+
+    view.task_scope.setCurrentIndex(view.task_scope.findData(task_id))
+    view.refresh()
+    assert view.task_scope.currentData() == task_id

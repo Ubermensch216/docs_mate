@@ -116,8 +116,13 @@ class Answer:
     inferred_years: list[int] = field(default_factory=list)
 
 
-def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answer:
-    """질문 하나에 답한다. 이전 질문을 기억하지 않는다."""
+def ask(db: Database, question: str, client: OllamaClient | None = None,
+        scope: QueryScope | None = None) -> Answer:
+    """질문 하나에 답한다. 이전 질문을 기억하지 않는다.
+
+    scope는 사용자가 화면에서 직접 고른 범위다. 질문 문장에서 읽어 낸
+    범위보다 우선한다 — 화면에서 골랐다는 것은 명시적 의사표시다.
+    """
     question = question.strip()
     if not question:
         return Answer(question=question, text="", withheld=True, error="빈 질문입니다")
@@ -165,7 +170,7 @@ def ask(db: Database, question: str, client: OllamaClient | None = None) -> Answ
     strong_ids = {cid for cid, score in vector_ranked if score >= MIN_SIMILARITY}
     strong_ids |= set(fts_ranked[:TOP_K])
 
-    scope = infer_scope(question)
+    scope = infer_scope(question).merged_with(scope)
     strong = _select_context(db, combined, strong_ids, scope, question)
 
     if not strong:
@@ -368,6 +373,12 @@ def _select_context(
     if collapsed:
         candidates = collapsed
 
+    if scope.has_task:
+        in_task = _task_chunk_ids(db, scope.task_id, [c.chunk_id for c in candidates])
+        matching = [c for c in candidates if c.chunk_id in in_task]
+        if matching:
+            candidates = matching
+
     if scope.has_year:
         matching = [c for c in candidates if c.eff_year in scope.years]
         if matching:
@@ -394,6 +405,24 @@ def _cap_per_document(
         if doc_id is not None:
             counts[doc_id] = counts.get(doc_id, 0) + 1
     return kept
+
+
+def _task_chunk_ids(db: Database, task_id: int, chunk_ids: list[int]) -> set[int]:
+    """그 업무에 배정된 문서의 조각만 남긴다.
+
+    사용자 교정(task_docs.origin='user')도 그대로 반영된다 — 업무 화면에서
+    문서를 옮겨 놓고 질문 화면에서 그 업무를 고르면 옮긴 대로 걸린다.
+    """
+    if not chunk_ids:
+        return set()
+    marks = ", ".join("?" * len(chunk_ids))
+    rows = db.con.execute(
+        f"SELECT c.id AS chunk_id FROM chunks c "
+        f"JOIN task_docs td ON td.doc_id = c.doc_id "
+        f"WHERE td.task_id = ? AND c.id IN ({marks})",
+        (task_id, *chunk_ids),
+    ).fetchall()
+    return {row["chunk_id"] for row in rows}
 
 
 def _distinctive_terms(db: Database, terms: list[str]) -> list[str]:

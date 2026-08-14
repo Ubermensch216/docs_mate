@@ -19,15 +19,16 @@ from ..search.rag import Answer, ask
 class AskWorker(QObject):
     done = Signal(object)   # Answer
 
-    def __init__(self, db_path: Path | str, question: str):
+    def __init__(self, db_path: Path | str, question: str, scope=None):
         super().__init__()
         self._db_path = Path(db_path)
         self._question = question
+        self._scope = scope
 
     def run(self) -> None:
         db = Database(self._db_path)
         try:
-            answer = ask(db, self._question)
+            answer = ask(db, self._question, scope=self._scope)
             db.save_question(
                 answer.question,
                 answer.text,
@@ -67,11 +68,11 @@ class AskRunner(QObject):
     def running(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
-    def start(self, question: str) -> bool:
+    def start(self, question: str, scope=None) -> bool:
         if self.running:
             return False
         self._thread = QThread()
-        self._worker = AskWorker(self._db_path, question)
+        self._worker = AskWorker(self._db_path, question, scope)
         self._worker.moveToThread(self._thread)
         self._worker.done.connect(self._finish)
         self._thread.started.connect(self._worker.run)

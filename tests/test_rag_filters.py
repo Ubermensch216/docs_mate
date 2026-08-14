@@ -296,3 +296,48 @@ def test_query_term_match_is_promoted_within_the_selection(db: Database):
         {off_topic, on_topic}, NO_SCOPE, "계약관리는 어떻게 처리해?",
     )
     assert [cid for cid, _s in result][0] == on_topic
+
+
+# ── 사용자가 고른 범위 (R9) ─────────────────────────────────────────
+
+def test_chosen_task_scope_narrows_to_that_tasks_documents(db: Database):
+    source_id = db.add_source("/자료")
+    mine = add_doc(db, source_id, "예산.hwp", year=2025, hash_="a")
+    other = add_doc(db, source_id, "감사.hwp", year=2025, hash_="b")
+    mine_chunk = add_chunk(db, mine, "예산 요구자료")
+    other_chunk = add_chunk(db, other, "감사 제출자료")
+
+    db.con.execute("INSERT INTO tasks(id, name) VALUES (1, '예산관리')")
+    db.con.execute("INSERT INTO task_docs(task_id, doc_id) VALUES (1, ?)", (mine,))
+
+    result = _select_context(
+        db, [(other_chunk, 0.9), (mine_chunk, 0.8)],
+        {other_chunk, mine_chunk}, QueryScope(task_id=1), "자료",
+    )
+    assert [cid for cid, _s in result] == [mine_chunk]
+
+
+def test_chosen_task_scope_is_soft_when_nothing_matches(db: Database):
+    """고른 업무에 근거가 하나도 없으면 되돌린다 — 빈 화면보다 낫다."""
+    source_id = db.add_source("/자료")
+    chunk = add_chunk(db, add_doc(db, source_id, "문서.hwp", hash_="a"), "내용")
+    db.con.execute("INSERT INTO tasks(id, name) VALUES (1, '빈업무')")
+
+    result = _select_context(db, [(chunk, 0.9)], {chunk}, QueryScope(task_id=1), "내용")
+    assert [cid for cid, _s in result] == [chunk]
+
+
+def test_chosen_scope_beats_the_year_inferred_from_the_question():
+    """화면에서 골랐다는 것은 명시적 의사표시다 — 문장 해석보다 우선한다."""
+    from app.search.query import QueryScope as QS
+
+    inferred = QS(years=[2025])
+    merged = inferred.merged_with(QS(years=[2023]))
+    assert merged.years == [2023]
+
+
+def test_chosen_scope_leaves_untouched_fields_alone():
+    from app.search.query import QueryScope as QS
+
+    merged = QS(years=[2025]).merged_with(QS(task_id=7))
+    assert merged.years == [2025] and merged.task_id == 7

@@ -29,13 +29,30 @@ _NEXT_YEAR = re.compile(r"내년|다음\s*해")
 
 @dataclass(slots=True)
 class QueryScope:
-    """질문에서 읽어 낸 범위. 지금은 연도만 다룬다."""
+    """질문의 범위. 문장에서 읽어 내거나(연도) 사용자가 직접 고른다(업무).
+
+    사용자가 고른 것이 문장에서 읽어 낸 것을 이긴다. "작년"이라고 썼는데
+    화면에서 2023년을 골랐다면 그 사람은 2023년을 보고 싶은 것이다.
+    """
 
     years: list[int] = field(default_factory=list)
+    task_id: int | None = None
 
     @property
     def has_year(self) -> bool:
         return bool(self.years)
+
+    @property
+    def has_task(self) -> bool:
+        return self.task_id is not None
+
+    def merged_with(self, chosen: "QueryScope | None") -> "QueryScope":
+        if chosen is None:
+            return self
+        return QueryScope(
+            years=chosen.years or self.years,
+            task_id=chosen.task_id if chosen.task_id is not None else self.task_id,
+        )
 
 
 def infer_scope(question: str, today: date | None = None) -> QueryScope:
