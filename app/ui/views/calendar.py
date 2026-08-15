@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 
 from PySide6.QtCore import Qt, Signal
@@ -59,11 +58,16 @@ from ..widgets import (
     open_original,
     view_title,
 )
-from .cycle_format import cycle_headline, guess_from_row, parse_months
+from .cycle_format import (
+    SOON_DAYS,
+    Upcoming,
+    cycle_headline,
+    guess_from_row,
+    is_now,
+    parse_months,
+    upcoming,
+)
 
-# 이 안에 들어오면 '지금 챙길 일'로 올린다. 공직 업무는 한 달 전부터
-# 준비 문서가 돌기 시작한다 — D-30을 넘겨 알려 주면 이미 늦다.
-SOON_DAYS = 45
 MONTH_NAMES = [f"{m}월" for m in range(1, 13)]
 MAX_UPCOMING = 8
 MAX_REVIEW = 12
@@ -76,24 +80,6 @@ TABS = (
     (LATER, "앞으로 올 일"),
     (REVIEW, "확인 필요"),
 )
-
-
-@dataclass(slots=True)
-class Upcoming:
-    """다가오는 반복 하나. 화면이 쓰기 좋은 모양으로 미리 계산해 둔다."""
-
-    row: object
-    when: date
-    days_away: int
-    running_now: bool
-
-    @property
-    def task_id(self) -> int:
-        return self.row["task_id"]
-
-    @property
-    def name(self) -> str:
-        return self.row["task_name"]
 
 
 class CalendarView(QWidget):
@@ -180,9 +166,9 @@ class CalendarView(QWidget):
         self.stack.setVisible(True)
         self.blank.setVisible(False)
 
-        entries = _upcoming(cycles, today)
-        now = [e for e in entries if _is_now(e)]
-        later = [e for e in entries if not _is_now(e)]
+        entries = upcoming(cycles, today)
+        now = [e for e in entries if is_now(e)]
+        later = [e for e in entries if not is_now(e)]
         pending = [c for c in cycles if status.of_cycle(c) != status.CONFIRMED]
 
         self._render_year(self.pages[YEAR].reset(), cycles, today)
@@ -550,38 +536,6 @@ class CalendarView(QWidget):
 
 
 # ── 계산 ────────────────────────────────────────────────────────────
-
-def _upcoming(cycles: list, today: date) -> list[Upcoming]:
-    """모든 주기를 '다음에 언제 오는가' 순으로 편다.
-
-    매월 반복은 다음 시점이 따로 없다 — 지금이 곧 그때다. 그래서 항상
-    '진행 중'으로 맨 앞에 둔다.
-    """
-    entries: list[Upcoming] = []
-    for row in cycles:
-        guess = guess_from_row(row)
-        if guess.kind == "monthly":
-            entries.append(Upcoming(row=row, when=today, days_away=0, running_now=True))
-            continue
-
-        when = guess.next_occurrence(today)
-        if when is None:
-            continue
-        running = guess.applies_to_month(today.month)
-        days = 0 if running else (when - today).days
-        entries.append(
-            Upcoming(row=row, when=today if running else when,
-                     days_away=days, running_now=running)
-        )
-
-    entries.sort(key=lambda e: (not e.running_now, e.days_away, e.name))
-    return entries
-
-
-def _is_now(entry: Upcoming) -> bool:
-    """'지금 챙길 일'인가. 두 탭이 같은 기준을 쓰도록 한 곳에서 판단한다."""
-    return entry.running_now or entry.days_away <= SOON_DAYS
-
 
 def _urgency(entry: Upcoming) -> QLabel:
     """언제인지를 한눈에. 숫자보다 말이 먼저 읽힌다."""

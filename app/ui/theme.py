@@ -375,6 +375,26 @@ def stylesheet(text_size: str = "medium") -> str:
     QLabel#NavPromiseHead {{ color: {CONFIRMED}; font-size: {small}px; font-weight: 700; }}
     QLabel#NavPromiseText {{ color: {TEXT_MUTED}; font-size: {small}px; }}
 
+    /* ── 인수인계 진행도 (§18) ──
+       메뉴 아래, 약속 위. 막대는 얇게 — 이건 지금 하는 일이 아니라 배경에
+       두는 눈금이다. 굵게 그리면 화면이 진행도 이야기를 하기 시작한다. */
+    QFrame#NavProgress {{
+        background: {BG};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS_SM}px;
+    }}
+    QLabel#NavProgressText {{ color: {TEXT}; font-size: {small}px; font-weight: 700; }}
+    QLabel#NavProgressHint {{ color: {TEXT_MUTED}; font-size: {small}px; }}
+    QProgressBar#NavProgressBar {{
+        background: {SURFACE_ALT};
+        border: none;
+        border-radius: 3px;
+    }}
+    QProgressBar#NavProgressBar::chunk {{
+        background: {CONFIRMED};
+        border-radius: 3px;
+    }}
+
     /* ── 화면 머리 ──
        제목·설명·탭을 흰 띠에 묶어 본문 바탕(회색)과 갈라 놓는다. 탭이
        어디에 붙은 물건인지 보이지 않으면 그냥 떠 있는 글자로 읽힌다. */
@@ -445,6 +465,61 @@ def stylesheet(text_size: str = "medium") -> str:
         color: {PRIMARY};
         background: {PRIMARY_SOFT};
     }}
+    /* 칩 글자는 버튼 텍스트가 아니라 안에 넣은 라벨이다 — 그래야 줄바꿈이
+       되어 질문이 잘리지 않는다. 색은 버튼을 따라가야 한다. */
+    QLabel#ChipText {{ color: {TEXT_MUTED}; font-size: {small}px; }}
+    QPushButton#Chip:hover QLabel#ChipText {{ color: {PRIMARY}; }}
+
+    /* ── 질문 화면: 근거 대조 ──
+       왼쪽에서 근거를 고르면 오른쪽에 그 문서의 원문이 펴진다. 고른 것과
+       안 고른 것의 차이가 한눈에 보여야 "지금 무엇을 대조하고 있는가"를
+       잃지 않는다. 색만으로 구분하지 않도록 테두리 두께도 함께 바꾼다. */
+    QLabel#SourceMark {{
+        background: {SURFACE_ALT}; color: {TEXT_MUTED};
+        border-radius: {RADIUS_SM}px; font-weight: 700;
+    }}
+    QLabel#SourceMarkOn {{
+        background: {PRIMARY}; color: {TEXT_ON_PRIMARY};
+        border-radius: {RADIUS_SM}px; font-weight: 700;
+    }}
+    QFrame#EvidencePick {{
+        background: {BG};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS}px;
+    }}
+    QFrame#EvidencePick:hover {{ border-color: {BORDER_STRONG}; }}
+    QFrame#EvidencePick[picked="true"] {{
+        border: 2px solid {PRIMARY};
+        background: {PRIMARY_SOFT};
+    }}
+    QLabel#EvidenceName {{ color: {TEXT}; font-weight: 600; }}
+    QFrame#SubPanel[picked="true"] {{ border: 2px solid {CONFIRMED}; }}
+
+    /* 원문 칸. 본문 바탕보다 살짝 낮춰 '읽는 자리'로 구분한다. */
+    QWidget#ReaderPane {{
+        background: {CANVAS};
+        border-left: 1px solid {BORDER};
+    }}
+    QLabel#ParaNumber {{ color: {TEXT_DISABLED}; font-size: {small}px; }}
+    QLabel#ParaText {{ color: {TEXT_MUTED}; line-height: 180%; }}
+    /* 인용된 대목. 답에서 이 문장을 가져왔다는 뜻이라 본문 색으로 세우고
+       바탕을 칠한다 — 원문에서 눈이 이 대목을 바로 찾는 것이 이 칸의 목적이다. */
+    QLabel#ParaCited {{
+        color: {TEXT};
+        background: {PRIMARY_SOFT};
+        border-radius: {RADIUS_SM}px;
+        padding: 2px 6px;
+        line-height: 180%;
+    }}
+    QPushButton#Fold {{
+        background: transparent;
+        border: 1px dashed {BORDER_STRONG};
+        border-radius: {RADIUS_SM}px;
+        color: {TEXT_SUBTLE};
+        font-size: {small}px;
+        padding: {SP_XS}px {SP_SM}px;
+    }}
+    QPushButton#Fold:hover {{ color: {PRIMARY}; border-color: {PRIMARY}; }}
 
     /* 답변 카드 — 이 화면의 주인공이라 테두리를 한 단계 세운다. */
     QFrame#AnswerCard {{
@@ -452,9 +527,13 @@ def stylesheet(text_size: str = "medium") -> str:
         border: 1px solid {BORDER_STRONG};
         border-radius: {RADIUS}px;
     }}
+    /* 답이 이 화면에서 가장 큰 글자다. 본문·칩·인용문이 다 같은 크기면
+       가장 중요한 것이 시각적으로 가장 크지 않다 — 눈이 어디부터 읽을지
+       스스로 정해야 한다. 보조 정보는 small로 물러선다. */
     QLabel#AnswerBody {{
         color: {TEXT};
-        line-height: 170%;
+        font-size: {section}px;
+        line-height: 175%;
     }}
 
     /* 생성 중 표시. 가느다란 막대 하나면 충분하다 — 회전하는 그림이나
@@ -724,6 +803,9 @@ def stylesheet(text_size: str = "medium") -> str:
     }}
     QLabel#StepLabel {{ font-weight: 600; }}
     QLabel#StepLabelInferred {{ color: {TEXT_MUTED}; font-style: italic; }}
+    /* 질문 화면의 흐름 카드에서 '지금 보는 단계'. 색과 무게를 함께 올린다 —
+       색만으로 구분하지 않는다는 규칙(PRD §18.4)은 여기에도 적용된다. */
+    QLabel#StepLabelHere {{ color: {PRIMARY}; font-weight: 700; }}
     QLabel#YearChip {{
         background: {SURFACE_ALT};
         color: {TEXT_MUTED};
@@ -734,6 +816,9 @@ def stylesheet(text_size: str = "medium") -> str:
     }}
     QLabel#PrimaryMark {{ color: {ATTENTION}; font-weight: 700; }}
     QLabel#LeftoverHead {{ color: {ATTENTION}; font-weight: 700; }}
+    /* '지금 먼저 확인할 것'의 한 줄. 본문보다 조금 굵게만 — 여기서 색까지
+       쓰면 경고처럼 보인다. 이건 경고가 아니라 다음에 할 일이다. */
+    QLabel#StartHereHead {{ color: {TEXT}; font-weight: 600; }}
     QLabel#StageDone {{ color: {CONFIRMED}; font-weight: 600; }}
 
     /* 줄 끝에 붙는 작은 조작. 글자만 두면 눌리는 것인지 알 수 없다. */

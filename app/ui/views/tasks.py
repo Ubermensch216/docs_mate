@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import status, timeline
+from ...core import handover, status, timeline
 from ...db import Database
 from .. import theme
 from ..widgets import (
@@ -62,10 +62,18 @@ from ..widgets import (
     legend_text,
     muted_label,
     open_original,
+    section_title,
     view_title,
 )
 from . import evidence
-from .cycle_format import cycle_headline, cycle_note, next_occurrence_text, parse_months
+from .cycle_format import (
+    cycle_headline,
+    cycle_note,
+    is_now,
+    next_occurrence_text,
+    parse_months,
+    upcoming,
+)
 
 STAGES = [
     ("파일 찾기", "total", None),
@@ -96,6 +104,7 @@ DETAIL_HINTS = {
 class TasksView(QWidget):
     go_documents = Signal()
     go_calendar = Signal()
+    state_changed = Signal()   # 확인·교정이 일어났다 (셸의 진행도가 듣는다)
 
     def __init__(self, db: Database, parent: QWidget | None = None):
         super().__init__(parent)
@@ -178,6 +187,7 @@ class TasksView(QWidget):
             self.stack.setCurrentWidget(self.list_page)
             self.column = self.list_page.reset()
             self._render_list()
+        self.state_changed.emit()
 
     def _switch(self, key: str) -> None:
         self._tab = key
@@ -230,13 +240,17 @@ class TasksView(QWidget):
         # 인수인계에서 가장 먼저 궁금한 건 "얼마나 끝냈나"다. 카드를 세어
         # 알아내게 하지 말고 머리에서 바로 말한다.
         done = sum(1 for row in tasks if status.of_task(row) == status.CONFIRMED)
+        progress = handover.summarize(self.db.handover_counts())
         marks = QHBoxLayout()
         marks.setSpacing(theme.SP_SM)
         marks.addWidget(Badge(f"{status.symbol(status.CONFIRMED)} 확인함 {done}", "ok"))
         if done < len(tasks):
             marks.addWidget(Badge(f"◐ 확인 필요 {len(tasks) - done}", "attention"))
+        marks.addWidget(_progress_chip(progress))
         marks.addStretch(1)
         self.head.addLayout(marks)
+
+        self._render_start_here(tasks, progress)
 
         # 카드 그리드로 한 화면 조망. 창을 넓히면 열이 늘어난다.
         grid = FlowGrid()
@@ -245,6 +259,109 @@ class TasksView(QWidget):
         self.column.addWidget(grid)
 
         self._render_leftovers(counts)
+
+    def _render_start_here(self, tasks: list, progress) -> None:
+        """‘지금 먼저 확인할 것’ (계획서 §7.1·§18).
+
+        분석이 끝난 자리에서 "이제 뭘 하지"를 사용자가 스스로 알아내게 두지
+        않는다. 별도 Dashboard 메뉴를 만들지 않고 업무 홈 맨 위에 둔다 —
+        메뉴가 늘면 이 제품이 답하는 네 질문의 구조가 무너진다.
+
+        빈 목록은 아예 그리지 않는다. 할 일이 없는데 '할 일' 판이 남아 있으면
+        그 판을 매번 읽고 지나가야 한다.
+        """
+        today = date.today()
+        soon = [
+            entry for entry in upcoming(self.db.all_cycles(), today) if is_now(entry)
+        ]
+        unconfirmed = [
+            row for row in tasks if status.of_task(row) != status.CONFIRMED
+        ]
+        marks = self.db.reading_marks()
+        unread = [
+            pick for row in tasks for pick in self.db.task_reading(row["id"])
+            if pick["doc_id"] not in marks
+        ]
+        if not (soon or unconfirmed or unread):
+            return
+
+        card = Card(tone="primary")
+        card.setMaximumWidth(theme.CONTENT_MAX_W)
+        head = QHBoxLayout()
+        head.setSpacing(theme.SP_SM)
+        head.addWidget(section_title("지금 먼저 확인할 것"))
+        head.addWidget(
+            InfoDot(
+                "인수인계를 어디부터 손대야 할지 알려 줍니다. "
+                "확인한 만큼 진행도가 오르고, 이 목록은 줄어듭니다."
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        head.addStretch(1)
+        head.addWidget(muted_label(progress.headline(), small=True, wrap=False))
+        card.body.addLayout(head)
+
+        if soon:
+            names = ", ".join(entry.name for entry in soon[:3])
+            more = f" 외 {len(soon) - 3}개" if len(soon) > 3 else ""
+            card.body.addWidget(
+                self._start_row(
+                    f"이번 달 안에 시작될 업무 {len(soon)}개",
+                    f"{names}{more}",
+                    "일정에서 보기 →",
+                    self.go_calendar.emit,
+                )
+            )
+        if unconfirmed:
+            names = ", ".join(row["name"] for row in unconfirmed[:3])
+            more = f" 외 {len(unconfirmed) - 3}개" if len(unconfirmed) > 3 else ""
+            first = unconfirmed[0]["id"]
+            card.body.addWidget(
+                self._start_row(
+                    f"아직 확인하지 않은 업무 {len(unconfirmed)}개",
+                    f"{names}{more}",
+                    "첫 업무 열기 →",
+                    lambda: self.open_task(first),
+                )
+            )
+        if unread:
+            names = ", ".join(pick["filename"] for pick in unread[:2])
+            more = f" 외 {len(unread) - 2}건" if len(unread) > 2 else ""
+            first_task = next(
+                row["id"] for row in tasks
+                if any(p["doc_id"] == unread[0]["doc_id"]
+                       for p in self.db.task_reading(row["id"]))
+            )
+            card.body.addWidget(
+                self._start_row(
+                    f"아직 읽지 않은 핵심 문서 {len(unread)}건",
+                    f"{names}{more}",
+                    "먼저 읽을 문서 →",
+                    lambda: self.open_task(first_task),
+                )
+            )
+        self.column.addWidget(card)
+
+    def _start_row(self, headline: str, detail: str, action: str, slot) -> QWidget:
+        panel = SubPanel()
+        row = QHBoxLayout()
+        row.setSpacing(theme.SP_SM)
+        text = QVBoxLayout()
+        text.setSpacing(0)
+        title = QLabel(headline)
+        title.setObjectName("StartHereHead")
+        text.addWidget(title)
+        text.addWidget(muted_label(detail, small=True))
+        row.addLayout(text, 1)
+
+        link = QPushButton(action)
+        link.setObjectName("Link")
+        link.setCursor(Qt.CursorShape.PointingHandCursor)
+        link.clicked.connect(lambda _=False: slot())
+        row.addWidget(link, 0, Qt.AlignmentFlag.AlignVCenter)
+        panel.body.addLayout(row)
+        return panel
 
     def _task_card(self, row) -> QWidget:
         cycle = self.db.task_cycle(row["id"])
@@ -425,6 +542,7 @@ class TasksView(QWidget):
 
     def _render_reading(self, column: QVBoxLayout, picks) -> None:
         column.addWidget(hint_row("이 순서로 읽으세요", DETAIL_HINTS[READ]))
+        marks = self.db.reading_marks()
 
         if not picks:
             column.addWidget(
@@ -461,6 +579,19 @@ class TasksView(QWidget):
             when.setObjectName("MetaChip")
             when.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             top.addWidget(when, 0, Qt.AlignmentFlag.AlignTop)
+
+            # 읽음 표시는 인수인계 진행도의 네 축 중 하나다(§18). '읽었다'는
+            # 어느 표에도 남지 않아서 이것만 따로 적어 둔다(handover_checks).
+            read = QPushButton("읽음" if pick["doc_id"] in marks else "읽음 표시")
+            read.setObjectName("Confirm" if pick["doc_id"] in marks else "Quiet")
+            read.setCheckable(True)
+            read.setChecked(pick["doc_id"] in marks)
+            read.setCursor(Qt.CursorShape.PointingHandCursor)
+            read.setToolTip("읽은 문서를 표시해 두면 어디까지 봤는지 남습니다")
+            read.clicked.connect(
+                lambda checked, d=pick["doc_id"]: self._mark_read(d, checked)
+            )
+            top.addWidget(read, 0, Qt.AlignmentFlag.AlignTop)
             card.body.addLayout(top)
 
             # 이유 없는 추천은 만들지 않는다. 판에 얹어 "이건 근거"라고 말한다.
@@ -1012,6 +1143,10 @@ class TasksView(QWidget):
         self.db.detach_document(task_id, doc_id)
         self.refresh()
 
+    def _mark_read(self, doc_id: int, done: bool) -> None:
+        self.db.mark_reading(doc_id, done)
+        self.refresh()
+
     def _open(self, path: str) -> None:
         open_original(self, self.db, path)
 
@@ -1089,6 +1224,22 @@ class SplitDialog(QDialog):
             item.data(Qt.ItemDataRole.UserRole) for item in dialog.list.selectedItems()
         ]
         return picked, dialog.name.text().strip()
+
+
+def _progress_chip(progress) -> QLabel:
+    """진행도를 뱃지 옆에 한 조각으로 붙인다.
+
+    막대 그래프를 여기 두지 않는다. 이 줄은 '확인함 5 / 확인 필요 2'처럼
+    세는 자리이고, 막대는 사이드바 아래에 상주한다(shell.py) — 같은 수치를
+    두 곳에서 다른 모양으로 크게 그리면 화면이 진행도 이야기만 하게 된다.
+    """
+    chip = QLabel(progress.headline())
+    chip.setObjectName("MetaChip")
+    chip.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+    nxt = progress.next_step()
+    if nxt is not None:
+        chip.setToolTip("다음에 확인할 것 · " + nxt.sentence())
+    return chip
 
 
 def _stage_line(label: str, done: int, limit: int, total_key: str | None) -> str:

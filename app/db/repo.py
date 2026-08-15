@@ -334,6 +334,53 @@ class Database:
                 [(doc_id, *c) for c in candidates],
             )
 
+    def sections(self, doc_id: int) -> list[sqlite3.Row]:
+        """문서 본문을 원래 순서대로. 근거 원문을 앱 안에서 보여줄 때 쓴다."""
+        return self.con.execute(
+            "SELECT kind, ordinal, locator, text FROM document_sections "
+            "WHERE doc_id = ? ORDER BY ordinal",
+            (doc_id,),
+        ).fetchall()
+
+    def section_counts(self, doc_ids: Sequence[int]) -> dict[int, int]:
+        """문서별 대목 수. 버전 비교에서 '8문단 / 7문단'을 말하는 근거다."""
+        ids = [int(i) for i in doc_ids]
+        if not ids:
+            return {}
+        marks = ", ".join("?" * len(ids))
+        rows = self.con.execute(
+            f"SELECT doc_id, COUNT(*) AS n FROM document_sections "
+            f"WHERE doc_id IN ({marks}) GROUP BY doc_id",
+            ids,
+        ).fetchall()
+        return {row["doc_id"]: row["n"] for row in rows}
+
+    def version_siblings(self, doc_id: int) -> list[sqlite3.Row]:
+        """같은 것을 여러 번 저장한 것으로 보이는 파일들 (자신 포함).
+
+        '이 파일이 최신본인가'는 이름으로 답할 수 없다 — `_최종`과
+        `_진짜최종`이 나란히 있는 것이 현장이다. 그래서 **같은 업무의 같은
+        단계**에 놓인 파일, 그리고 내용이 완전히 같은 사본을 후보로 모은다.
+        판정은 화면이 아니라 파일 수정 시각이 한다.
+        """
+        return self.con.execute(
+            """
+            SELECT DISTINCT d.id, d.filename, d.path, d.ext, d.hash,
+                   d.fs_mtime, d.eff_date, d.eff_precision, d.size
+            FROM documents d
+            WHERE d.missing_since IS NULL AND (
+                  d.id = :doc
+               OR (d.hash IS NOT NULL AND d.hash = (
+                      SELECT hash FROM documents WHERE id = :doc))
+               OR d.id IN (
+                      SELECT s.doc_id FROM task_steps s
+                      WHERE s.doc_id IS NOT NULL AND (s.task_id, s.label) IN (
+                          SELECT x.task_id, x.label FROM task_steps x WHERE x.doc_id = :doc)))
+            ORDER BY d.fs_mtime DESC, d.filename
+            """,
+            {"doc": doc_id},
+        ).fetchall()
+
     def dates(self, doc_id: int) -> list[sqlite3.Row]:
         return self.con.execute(
             "SELECT * FROM document_dates WHERE doc_id = ?", (doc_id,)
@@ -768,6 +815,118 @@ class Database:
         self.con.execute(
             "UPDATE questions SET rating = ? WHERE id = ?", (rating, question_id)
         )
+
+    def document_context(self, doc_ids: Sequence[int]) -> dict[int, dict]:
+        """문서마다 '이게 무슨 업무의 어느 단계이고, 최신본인가'를 한 번에 모은다.
+
+        질문 화면의 근거 목록이 파일명만 늘어놓으면, 사용자는 그 파일이
+        어느 업무의 것인지·지금 열어도 되는 최신본인지 알 수 없다. 좌측
+        메뉴가 '이 파일이 최신본인가'를 약속하는데 답변 화면이 그 약속을
+        지키지 않는 것이 실제로 지적된 문제다.
+
+        판정은 **아는 것만** 한다. 같은 내용(hash 동일) 사본이 여럿이면 파일
+        수정일이 가장 늦은 것을 최신으로 보고, 그 업무의 최신 연도보다 오래된
+        자료면 지난 연도로 표시한다. 내용이 '비슷한' 문서를 최신본으로 고르는
+        일은 하지 않는다 — 그건 추측이다.
+        """
+        ids = [int(i) for i in doc_ids]
+        if not ids:
+            return {}
+        marks = ", ".join("?" * len(ids))
+        rows = self.con.execute(
+            f"""
+            SELECT d.id, d.filename, d.path, d.hash, d.fs_mtime,
+                   d.eff_date, d.eff_precision, d.eff_date_kind, d.eff_year,
+                   (SELECT t.id FROM task_docs td JOIN tasks t ON t.id = td.task_id
+                     WHERE td.doc_id = d.id AND t.not_a_task = 0 AND t.merged_into IS NULL
+                     ORDER BY td.is_primary DESC, t.name LIMIT 1)      AS task_id,
+                   (SELECT t.name FROM task_docs td JOIN tasks t ON t.id = td.task_id
+                     WHERE td.doc_id = d.id AND t.not_a_task = 0 AND t.merged_into IS NULL
+                     ORDER BY td.is_primary DESC, t.name LIMIT 1)      AS task_name,
+                   (SELECT s.label FROM task_steps s WHERE s.doc_id = d.id
+                     ORDER BY s.year DESC, s.ordinal LIMIT 1)          AS step_label,
+                   (SELECT COUNT(*) FROM documents x
+                     WHERE x.hash = d.hash AND d.hash IS NOT NULL
+                       AND x.missing_since IS NULL)                    AS copies,
+                   (SELECT MAX(x.fs_mtime) FROM documents x
+                     WHERE x.hash = d.hash AND d.hash IS NOT NULL
+                       AND x.missing_since IS NULL)                    AS newest_copy_at
+            FROM documents d
+            WHERE d.id IN ({marks})
+            """,
+            ids,
+        ).fetchall()
+
+        out: dict[int, dict] = {}
+        latest_year: dict[int, int | None] = {}
+        for row in rows:
+            item = dict(row)
+            task_id = item["task_id"]
+            if task_id is not None and task_id not in latest_year:
+                latest_year[task_id] = self.con.execute(
+                    "SELECT MAX(d.eff_year) AS y FROM task_docs td "
+                    "JOIN documents d ON d.id = td.doc_id "
+                    "WHERE td.task_id = ? AND d.missing_since IS NULL",
+                    (task_id,),
+                ).fetchone()["y"]
+            item["task_latest_year"] = latest_year.get(task_id)
+            out[item["id"]] = item
+        return out
+
+    # ── 인수인계 진행도 (계획서 §18) ────────────────────────────────
+    # 진행도는 새로 쌓는 자료가 아니라 **A-1 교정의 부산물**이다. 사용자가
+    # 업무를 확인하고 주기를 확정하면 그 자체로 진행도가 오른다. 그래서
+    # 확인 상태를 따로 적어 두지 않고 기존 표에서 센다 — 두 벌로 적으면
+    # 반드시 어긋나고, 어긋난 진행도는 아예 없느니만 못하다.
+    #
+    # 예외가 하나 있다. '읽었다'는 어느 표에도 남지 않으므로 그것만
+    # handover_checks에 적는다.
+    _LIVE_TASK = "t.not_a_task = 0 AND t.merged_into IS NULL"
+    _TASK_DONE = "(t.review_state = 'confirmed' OR t.status IN ('approved','edited'))"
+
+    def handover_counts(self) -> dict[str, int]:
+        """네 축의 (확인함, 전체). 계획서 §18의 네 줄이 여기서 나온다."""
+        one = self.con.execute(
+            f"""
+            SELECT
+              (SELECT COUNT(*) FROM tasks t WHERE {self._LIVE_TASK}) AS tasks_total,
+              (SELECT COUNT(*) FROM tasks t
+                WHERE {self._LIVE_TASK} AND {self._TASK_DONE})       AS tasks_done,
+              (SELECT COUNT(*) FROM task_reading r JOIN tasks t ON t.id = r.task_id
+                WHERE {self._LIVE_TASK})                             AS reading_total,
+              (SELECT COUNT(*) FROM task_reading r JOIN tasks t ON t.id = r.task_id
+                JOIN handover_checks h
+                  ON h.kind = 'reading' AND h.target_id = r.doc_id AND h.state = 'done'
+                WHERE {self._LIVE_TASK})                             AS reading_done,
+              (SELECT COUNT(*) FROM task_cycles c JOIN tasks t ON t.id = c.task_id
+                WHERE {self._LIVE_TASK})                             AS cycles_total,
+              (SELECT COUNT(*) FROM task_cycles c JOIN tasks t ON t.id = c.task_id
+                WHERE {self._LIVE_TASK} AND c.decided_by = 'user')   AS cycles_done,
+              (SELECT COUNT(DISTINCT s.task_id) FROM task_steps s JOIN tasks t ON t.id = s.task_id
+                WHERE {self._LIVE_TASK})                             AS steps_total,
+              (SELECT COUNT(DISTINCT s.task_id) FROM task_steps s JOIN tasks t ON t.id = s.task_id
+                WHERE {self._LIVE_TASK} AND s.decided_by = 'user')   AS steps_done
+            """
+        ).fetchone()
+        return {key: one[key] or 0 for key in one.keys()}
+
+    def reading_marks(self) -> set[int]:
+        """읽음으로 표시한 문서 id."""
+        rows = self.con.execute(
+            "SELECT target_id FROM handover_checks WHERE kind = 'reading' AND state = 'done'"
+        ).fetchall()
+        return {row["target_id"] for row in rows}
+
+    def mark_reading(self, doc_id: int, done: bool = True) -> None:
+        """'이 문서 읽었다' 표시. 되돌릴 수 있어야 하므로 지우지 않고 상태로 둔다."""
+        self.con.execute(
+            "INSERT INTO handover_checks(kind, target_id, state, updated_at) "
+            "VALUES ('reading', ?, ?, datetime('now')) "
+            "ON CONFLICT(kind, target_id) DO UPDATE SET "
+            "state = excluded.state, updated_at = excluded.updated_at",
+            (doc_id, "done" if done else "pending"),
+        )
+        self.audit("reading.mark", str(doc_id), "done" if done else "pending")
 
     def unclassified_count(self) -> int:
         return self.con.execute(

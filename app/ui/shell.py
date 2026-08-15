@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import handover
 from ..db import Database
 from ..jobs import PipelineRunner
 from . import icons, theme
@@ -243,6 +244,30 @@ class Sidebar(QWidget):
 
         column.addStretch(1)
 
+        # 인수인계 진행도는 메뉴 아래에 상주한다 (계획서 §18·§6). 어느 화면에
+        # 있든 "얼마나 남았나"가 보여야, 확인 작업이 끝이 있는 일로 느껴진다.
+        # 업무 홈에만 두면 다른 화면에서 교정하는 동안에는 사라진다.
+        self.progress_box = QFrame()
+        self.progress_box.setObjectName("NavProgress")
+        progress_col = QVBoxLayout(self.progress_box)
+        progress_col.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
+        progress_col.setSpacing(theme.SP_XS)
+        self._progress_text = QLabel("인수인계 진행도")
+        self._progress_text.setObjectName("NavProgressText")
+        progress_col.addWidget(self._progress_text)
+        self.handover = QProgressBar()
+        self.handover.setObjectName("NavProgressBar")
+        self.handover.setTextVisible(False)
+        self.handover.setFixedHeight(6)
+        self.handover.setRange(0, 100)
+        progress_col.addWidget(self.handover)
+        self._progress_hint = QLabel("")
+        self._progress_hint.setObjectName("NavProgressHint")
+        self._progress_hint.setWordWrap(True)
+        progress_col.addWidget(self._progress_hint)
+        self.progress_box.hide()
+        column.addWidget(self.progress_box)
+
         # 이 도구가 지키는 약속. 사이드바 바닥의 흐린 한 줄로 흘리면
         # 읽히지 않는다 — 원본을 건드리지 않는다는 것이 채택의 조건이다.
         promise = QFrame()
@@ -289,6 +314,18 @@ class Sidebar(QWidget):
         button = self._buttons.get(key)
         if button:
             button.setChecked(True)
+
+    def show_handover(self, progress) -> None:
+        """진행도를 갱신한다. 잴 것이 없으면 아예 숨긴다 —
+        분석이 끝나기 전의 0%는 '아무것도 안 했다'는 잘못된 질책이다."""
+        if not progress.measured:
+            self.progress_box.hide()
+            return
+        self.progress_box.show()
+        self.handover.setValue(progress.percent)
+        self._progress_text.setText(progress.headline())
+        nxt = progress.next_step()
+        self._progress_hint.setText(nxt.sentence() if nxt else "확인할 것이 남지 않았습니다")
 
     def setEnabledNav(self, enabled: bool) -> None:
         for button in self._buttons.values():
@@ -353,7 +390,12 @@ class MainWindow(QMainWindow):
         # When(일정)과 What(업무)은 서로 되돌아간다 — 일정에서 업무를 열고,
         # 업무 상세에서 일정으로 넘어간다.
         self.views["tasks"].go_calendar.connect(lambda: self.go("calendar"))
+        # 업무 화면에서 확인·교정이 일어나면 사이드바 진행도가 그 자리에서 오른다.
+        self.views["tasks"].state_changed.connect(self._sync_handover)
         self.views["calendar"].open_task.connect(self._open_task_from_calendar)
+        # 답변의 근거 문서가 어느 업무의 것인지 눌러서 갈 수 있어야 한다.
+        # 텍스트로만 적혀 있으면 "그래서 그 업무가 어디 있는데?"로 끝난다.
+        self.views["ask"].open_task.connect(self._open_task_from_calendar)
 
         # 처리는 백그라운드에서 돈다. UI는 완료를 기다리지 않고 이미 처리된
         # 결과부터 보여준다.
@@ -380,6 +422,7 @@ class MainWindow(QMainWindow):
         self.sidebar.select(key)
         if hasattr(view, "refresh"):
             view.refresh()
+        self._sync_handover()
 
     def _install_shortcuts(self) -> None:
         for index, (key, _icon, _label, _question) in enumerate(NAV, start=1):
@@ -396,6 +439,7 @@ class MainWindow(QMainWindow):
             self.topbar.show_idle("자료원이 없습니다")
             return
 
+        self._sync_handover()
         if not self.runner.running:
             self._show_idle_status()
         if self.stack.currentWidget() is self.views["onboarding"]:
@@ -474,6 +518,15 @@ class MainWindow(QMainWindow):
         view = self.stack.currentWidget()
         if hasattr(view, "refresh"):
             view.refresh()
+
+    def _sync_handover(self) -> None:
+        """사이드바 진행도를 지금 상태로 맞춘다.
+
+        업무를 확인하거나 문서를 읽음 표시하면 그 자리에서 올라가야 한다.
+        화면을 옮겨야만 갱신되면, 사용자는 자기가 한 일이 반영됐는지 확인하러
+        메뉴를 한 번씩 눌러 보게 된다.
+        """
+        self.sidebar.show_handover(handover.summarize(self.db.handover_counts()))
 
     def _open_status(self) -> None:
         from .status_dialog import StatusDialog

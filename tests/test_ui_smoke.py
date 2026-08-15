@@ -573,8 +573,11 @@ def test_ask_view_renders_answer_with_citations_and_feedback(make_window, db):
     # 근거는 답변 카드 안이 아니라 옆 패널에 상주한다 — 답이 주인공이고
     # 근거가 세로 공간을 잡아먹지 않아야 한다.
     assert any("행감자료.hwp" in t for t in _labels(view.drawer))
-    assert any("도움됨" in b.text() for b in buttons)
-    assert any("부정확" in b.text() for b in buttons)
+    # 피드백은 둘뿐이다 — '부정확'과 '출처가 틀림'의 차이를 처음 쓰는 사람이
+    # 판단할 수 없어 하나로 합쳤다(디자인 개선안 진단 7).
+    assert any("맞아요" in b.text() for b in buttons)
+    assert any("사실과 달라요" in b.text() for b in buttons)
+    assert not any("출처가 틀림" in b.text() for b in buttons)
 
 
 def test_ask_view_shows_error_when_generation_fails(make_window, db):
@@ -607,7 +610,7 @@ def test_ask_view_rating_persists_to_the_latest_question(make_window, db):
     view._render_answer(answer)
 
     for button in _button_widgets(view):
-        if "도움됨" in button.text():
+        if button.text() == "맞아요":
             button.click()
             break
 
