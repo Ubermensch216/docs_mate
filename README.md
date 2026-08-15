@@ -139,7 +139,25 @@ pyinstaller NunchiCoach.spec
 dist\NunchiCoach\NunchiCoach.exe selftest <검증용_문서_폴더>
 ```
 
-### 5. 릴리스 산출물 (의존성 잠금 · SBOM)
+### 5. 품질 계측 (고치기 전에 재기)
+
+분석 품질은 눈으로 판단할 수 없습니다. 군집 임계값·프롬프트·파서를 손대기
+전후로 같은 자를 대고 비교하세요.
+
+```bash
+# 질문(RAG) 품질 — 프롬프트·임계값을 바꿀 땐 --repeat 3 이상
+python -m app.tools.rag_report --repeat 3
+
+# 업무 분류 품질 — 사람이 만든 정답(CSV: 파일명,업무)과 대조
+python -m app.tools.cluster_report --truth 정답.csv
+
+# 파서 회귀 — 실제 문서 표본으로 (표본 경로는 저장소 밖에 둡니다)
+setx NUNCHICOACH_SAMPLES D:\검증표본
+python -m app.tools.parse_bench --record    # 기준 만들기
+python -m app.tools.parse_bench --check     # 달라졌는지 검사 (다르면 exit 1)
+```
+
+### 6. 릴리스 산출물 (의존성 잠금 · SBOM)
 
 배포본은 "무엇이 들어 있는지"가 파일로 고정돼야 합니다. 공직 환경 도입 심사에서
 요구하는 항목이기도 합니다.
