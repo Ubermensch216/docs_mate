@@ -90,6 +90,60 @@ def test_forget_removes_from_the_list_but_keeps_the_data(tmp_path: Path):
     assert entry.path not in [item.path for item in registry.list_projects(tmp_path)]
 
 
+# ── 완전 삭제 (계획서 §30-3) ────────────────────────────────────────
+
+def test_delete_removes_the_wal_and_backup_files_too(tmp_path: Path):
+    """DB 하나만 지우면 WAL과 마이그레이션 백업에 내용이 그대로 남는다."""
+    entry = registry.create_project("총무팀", tmp_path)
+    db = open_project_at(entry.path)
+    db.audit("test")                        # WAL에 쓰기를 일으킨다
+    (entry.path / "project.db.bak-v1").write_text("옛 사본", encoding="utf-8")
+    db.close()
+
+    removed = registry.delete_project(entry.path, tmp_path)
+
+    names = {item.name for item in removed}
+    assert "project.db" in names
+    assert "project.db.bak-v1" in names
+    assert not list(tmp_path.glob("**/project.db*"))
+    assert not registry.list_projects(tmp_path)
+
+
+def test_delete_never_touches_files_it_did_not_create(tmp_path: Path):
+    """'폴더에서 열기'로 등록한 프로젝트는 사용자의 자료 폴더 자체일 수 있다.
+    폴더를 통째로 지우면 전임자 원본을 지우는 사고가 된다."""
+    base = tmp_path / "projects"
+    source = tmp_path / "전임자자료"
+    source.mkdir()
+    original = source / "2024_행정사무감사.hwp"
+    original.write_text("원본", encoding="utf-8")
+    open_project_at(source).close()
+    registry.register(source, name="현장 폴더", root=base)
+
+    registry.delete_project(source, base)
+
+    assert original.exists(), "원본 자료가 지워졌다"
+    assert source.exists()
+    assert not (source / "project.db").exists()
+
+
+def test_delete_removes_the_folder_when_nothing_else_is_left(tmp_path: Path):
+    entry = registry.create_project("총무팀", tmp_path)
+    open_project_at(entry.path).close()
+
+    registry.delete_project(entry.path, tmp_path)
+
+    assert not entry.path.exists()
+
+
+def test_delete_is_safe_on_a_project_that_is_already_gone(tmp_path: Path):
+    entry = registry.create_project("총무팀", tmp_path)
+    shutil.rmtree(entry.path)
+
+    assert registry.delete_project(entry.path, tmp_path) == []
+    assert not registry.list_projects(tmp_path)
+
+
 def test_external_folder_is_marked_and_survives_reload(tmp_path: Path):
     base = tmp_path / "projects"
     outside = tmp_path / "usb" / "handover"

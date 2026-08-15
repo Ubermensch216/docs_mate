@@ -18,6 +18,7 @@ AI 상태를 여기서 정직하게 보여준다. Ollama가 없어도 조사·�
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -452,12 +453,28 @@ class SettingsDialog(QDialog):
         path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         card.body.addWidget(path_label)
 
+        warning = storage_warning(self.db.path)
+        if warning:
+            card.body.addWidget(UnknownBlock(warning))
+
         counts = self.db.counts()
         card.body.addWidget(
             muted_label(
                 f"문서 {counts['documents']:,}건 · 의미 색인 {counts['embedded']:,}건 · "
                 f"요약 {counts['summarized']:,}건",
                 small=True,
+            )
+        )
+
+        # 이 파일에는 문서 본문 조각과 요약이 들어 있다. 암호화는 아직 하지
+        # 않으므로(오프라인 설치와 충돌한다) 그 사실을 감추지 않고 말한다.
+        # 저장 위치를 어디로 둘지 판단할 수 있어야 사용자가 스스로 지킨다.
+        card.body.addWidget(
+            UnknownBlock(
+                "이 파일도 민감정보입니다. 원본 자료의 본문 일부와 요약이 담겨 "
+                "있으므로, 원본과 같은 수준으로 관리하세요. 지금은 파일 자체를 "
+                "암호화하지 않으며, 접근은 이 PC 사용자 계정 권한으로 제한됩니다. "
+                "더 이상 필요 없으면 시작 화면에서 ‘완전 삭제’로 지울 수 있습니다."
             )
         )
         return card
@@ -683,3 +700,26 @@ class _SourceRow(QFrame):
 
 def _source_kind(path: Path) -> str:
     return "unc" if str(path).startswith("\\\\") else "local"
+
+
+def storage_warning(path: Path | str) -> str:
+    """저장 위치가 내 계정 밖이면 알린다 (SEC-003, 계획서 §30-5).
+
+    기본 위치(`%LOCALAPPDATA%`)는 윈도우가 계정 권한으로 막아 준다. 그런데
+    `--data`로 공유 폴더나 USB를 지정하면 그 보호가 통째로 사라진다 — 부서
+    공유 드라이브에 분석 결과를 두면 문서 본문 조각을 부서원 전체가 읽을 수
+    있다. 권한 목록(ACL)을 해석하는 대신 **위치**로 판단한다. 정확도는 낮지만
+    사용자가 확인해야 할 상황을 놓치지 않고, 어떤 윈도우에서도 같게 동작한다.
+    """
+    text = str(path)
+    if text.startswith("\\\\"):
+        return ("이 저장 위치는 네트워크 공유 폴더입니다. 분석 결과에는 문서 "
+                "본문 조각이 들어 있으므로, 그 폴더에 접근할 수 있는 사람이 "
+                "모두 읽을 수 있습니다.")
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    try:
+        Path(text).resolve().relative_to(Path(home).resolve())
+    except (ValueError, OSError):
+        return ("이 저장 위치는 내 계정 폴더 밖입니다. 같은 PC를 쓰는 다른 "
+                "계정이 읽을 수 있는 자리인지 확인하세요.")
+    return ""

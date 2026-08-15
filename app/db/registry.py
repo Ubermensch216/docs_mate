@@ -147,6 +147,47 @@ def rename(path: Path, name: str, root: Path | None = None) -> None:
     _save(base, _replace_entry(_load(base), replace(entry, name=name.strip() or entry.name)))
 
 
+def project_files(path: Path) -> list[Path]:
+    """이 프로젝트가 디스크에 만든 파일 전부 (계획서 §30-3).
+
+    DB 하나가 아니다. WAL 모드라 `-wal`·`-shm`이 함께 살고(repo.py의 PRAGMA),
+    스키마를 올릴 때마다 `project.db.bak-v1` 같은 사본이 생긴다. 하나라도
+    남기면 "지웠다"는 말이 거짓이 된다 — 공직 자료를 다루는 도구에서 그건
+    기능 결함이 아니라 약속 위반이다.
+    """
+    folder = Path(path)
+    names = [
+        folder / DB_NAME,
+        folder / f"{DB_NAME}-wal",
+        folder / f"{DB_NAME}-shm",
+        folder / f"{DB_NAME}-journal",
+    ]
+    names += sorted(folder.glob(f"{DB_NAME}.bak-*"))
+    return [item for item in names if item.exists()]
+
+
+def delete_project(path: Path, root: Path | None = None) -> list[Path]:
+    """분석 결과를 실제로 지우고 목록에서도 뺀다. 지운 파일 목록을 돌려준다.
+
+    **폴더를 통째로 지우지 않는다.** '폴더에서 열기'로 등록한 프로젝트는
+    사용자의 자료 폴더 자체일 수 있어(그 자리에 project.db를 만든다), 재귀
+    삭제는 전임자 원본을 지우는 사고가 된다. 우리가 만든 파일만 이름으로
+    골라 지우고, 그러고도 폴더가 비었을 때만 폴더를 치운다.
+    """
+    folder = Path(path)
+    removed: list[Path] = []
+    for item in project_files(folder):
+        item.unlink()
+        removed.append(item)
+    forget(folder, root)
+    try:
+        if folder.exists() and not any(folder.iterdir()):
+            folder.rmdir()
+    except OSError:              # 다른 프로그램이 폴더를 쥐고 있어도 삭제는 끝난 것
+        pass
+    return removed
+
+
 def forget(path: Path, root: Path | None = None) -> None:
     """목록에서만 뺀다. 폴더와 DB는 그대로 둔다.
 

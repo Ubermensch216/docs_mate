@@ -139,6 +139,27 @@ pyinstaller NunchiCoach.spec
 dist\NunchiCoach\NunchiCoach.exe selftest <검증용_문서_폴더>
 ```
 
+### 5. 릴리스 산출물 (의존성 잠금 · SBOM)
+
+배포본은 "무엇이 들어 있는지"가 파일로 고정돼야 합니다. 공직 환경 도입 심사에서
+요구하는 항목이기도 합니다.
+
+```bash
+# 지금 환경이 잠금 파일과 같은지 확인 (다르면 무엇이 어긋났는지 알려줍니다)
+python -m app.tools.lockfile --check
+
+# 구성요소 목록(CycloneDX SBOM)을 릴리스에 함께 넣기
+python -m app.tools.sbom --version 1.0.0 --pretty
+```
+
+오프라인 설치 꾸러미를 만들 때는 wheel을 먼저 받아 두고 그 해시까지 잠급니다.
+
+```bash
+pip download -r requirements.txt -d wheelhouse
+python -m app.tools.lockfile --wheelhouse wheelhouse
+pip install --no-index --find-links wheelhouse -r requirements.lock
+```
+
 ---
 
 ## 📄 참고 문서

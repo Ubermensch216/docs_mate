@@ -1,0 +1,39 @@
+# 눈치코치 의존성 잠금 파일 — 배포·재현 빌드의 기준이다.
+# 만든 날 2026-08-15 · Python 3.14.6 · win32
+# 다시 만들기:  python -m app.tools.lockfile
+# 검사하기:     python -m app.tools.lockfile --check
+
+altgraph==0.17.5
+anyio==4.14.2
+certifi==2026.7.22
+colorama==0.4.6
+coverage==7.15.4
+et_xmlfile==2.0.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+iniconfig==2.3.0
+lxml==6.1.1
+numpy==2.5.2
+olefile==0.47
+openpyxl==3.1.5
+packaging==26.3
+pefile==2024.8.26
+pillow==12.3.0
+pluggy==1.6.0
+Pygments==2.20.0
+pyinstaller==6.22.0
+pyinstaller-hooks-contrib==2026.6
+pymupdf==1.28.2
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+pytest==9.1.1
+pytest-cov==7.1.0
+python-docx==1.2.0
+python-pptx==1.0.2
+pywin32-ctypes==0.2.3
+shiboken6==6.11.1
+typing_extensions==4.16.0
+xlsxwriter==3.2.9

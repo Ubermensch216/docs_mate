@@ -122,6 +122,7 @@ class LauncherDialog(QDialog):
                     on_open=self._open,
                     on_rename=self._rename,
                     on_forget=self._forget,
+                    on_delete=self._delete,
                 )
             )
 
@@ -191,6 +192,42 @@ class LauncherDialog(QDialog):
         registry.forget(entry.path, self.root)
         self.refresh()
 
+    def _delete(self, entry: ProjectEntry) -> None:
+        """분석 결과를 실제로 지운다 (계획서 §30-3).
+
+        무엇이 사라지고 무엇이 남는지를 먼저 말한다. 이 도구에서 '지우기'가
+        무서운 이유는 사용자가 **원본이 지워지는 것**을 걱정하기 때문이다 —
+        그 걱정을 먼저 풀어 주지 않으면 지우지도, 믿지도 못한다.
+        """
+        files = registry.project_files(entry.path)
+        answer = QMessageBox.warning(
+            self,
+            "분석 결과 완전 삭제",
+            f"{entry.name}\n{entry.path}\n\n"
+            f"이 인수인계의 분석 결과 파일 {len(files)}개를 지웁니다. "
+            "직접 고친 내용·확인 표시·질문 기록이 함께 사라지며 되돌릴 수 없습니다.\n\n"
+            "전임자 원본 자료는 지우지 않습니다. 이 프로그램은 원본을 읽기만 합니다.\n\n"
+            "계속할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            removed = registry.delete_project(entry.path, self.root)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "지우지 못했습니다",
+                f"{exc.strerror or exc}\n\n다른 창에서 이 인수인계를 열어 두었다면 "
+                "닫고 다시 시도하세요.",
+            )
+            return
+        self.refresh()
+        QMessageBox.information(
+            self, "삭제 완료", f"파일 {len(removed)}개를 지웠습니다. 원본 자료는 그대로입니다."
+        )
+
 
 class _ProjectRow(QFrame):
     """프로젝트 한 줄 — 이름 / 경로 / 마지막으로 연 날짜 + 조작.
@@ -200,7 +237,8 @@ class _ProjectRow(QFrame):
     """
 
     def __init__(self, entry: ProjectEntry, is_current: bool,
-                 on_open, on_rename, on_forget, parent: QWidget | None = None):
+                 on_open, on_rename, on_forget, on_delete,
+                 parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("SubPanel")
         self._entry = entry
@@ -245,6 +283,17 @@ class _ProjectRow(QFrame):
         forget.setToolTip("분석 결과는 지우지 않습니다")
         forget.clicked.connect(lambda: on_forget(entry))
         bottom.addWidget(forget)
+
+        # 빼기와 지우기를 같은 무게로 두지 않는다. 하나는 되돌릴 수 있고
+        # 하나는 아니다 — 색과 이름이 그 차이를 먼저 말해야 한다.
+        delete = QPushButton("완전 삭제")
+        delete.setObjectName("Destructive")
+        delete.setToolTip("분석 결과를 지웁니다. 원본 자료는 건드리지 않습니다.")
+        delete.setEnabled(not is_current)
+        if is_current:
+            delete.setToolTip("지금 열려 있는 인수인계는 지울 수 없습니다")
+        delete.clicked.connect(lambda: on_delete(entry))
+        bottom.addWidget(delete)
 
         open_button = QPushButton("열기")
         open_button.setObjectName("Primary")

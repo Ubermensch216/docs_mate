@@ -12,6 +12,7 @@ WAL 저널 모드(db/repo.py)가 이 시험의 전제다 — 쓰기 도중 죽�
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -65,25 +66,27 @@ def test_force_killed_scan_leaves_a_valid_database_and_resumes(tmp_path: Path, m
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         cwd=str(REPO_ROOT),
     )
-    # 고정 sleep 대신 DB 파일이 실제로 생기는 것을 기다린다 — Python·PySide6
-    # 콜드 스타트 시간이 환경마다 달라 고정 대기는 타이밍이 어긋나기 쉽다.
-    deadline = time.monotonic() + 20
-    while not db_path.exists():
+    # 파일이 생긴 것만 보고 죽이면 안 된다 — sqlite는 스키마를 붓기 **전에**
+    # 빈 파일을 먼저 만든다. 그 찰나에 죽이면 표가 하나도 없는 DB가 남아,
+    # 이 시험이 확인하려는 '중단된 진행'이 아니라 '시작도 못 한 상태'를 본다
+    # (실제로 이 시험이 간헐적으로 실패하던 원인이다). 문서가 실제로 들어가기
+    # 시작한 것을 확인하고 죽인다.
+    deadline = time.monotonic() + 30
+    while _scanned(db_path) == 0:
         if time.monotonic() > deadline:
             proc.kill()
-            pytest.fail("20초 안에 DB 파일이 생기지 않았습니다")
+            pytest.fail("30초 안에 스캔이 시작되지 않았습니다")
         if proc.poll() is not None:
-            pytest.fail(f"DB 파일이 생기기 전에 프로세스가 끝났습니다 (exit={proc.returncode})")
+            pytest.fail(f"스캔이 시작되기 전에 프로세스가 끝났습니다 (exit={proc.returncode})")
         time.sleep(0.1)
 
-    time.sleep(0.4)   # 스캔·해시가 한창 돌고 있을 시점까지 조금 더 기다린다
-    assert proc.poll() is None, "프로세스가 확인 전에 이미 끝났습니다 — 대기 시간을 줄이세요"
+    assert proc.poll() is None, "프로세스가 확인 전에 이미 끝났습니다 — 표본을 늘리세요"
     proc.kill()
     proc.wait(timeout=10)
 
     # 2) DB 파일 자체가 열리고, 정합성 검사를 통과해야 한다.
     assert db_path.exists(), "강제 종료 시점까지 DB 파일이 생성되지 않았습니다"
-    db = Database(db_path)
+    db = _open_after_kill(db_path)
     integrity = db.con.execute("PRAGMA integrity_check").fetchone()[0]
     assert integrity == "ok", f"DB 정합성 검사 실패: {integrity}"
 
@@ -134,3 +137,44 @@ def test_force_killed_scan_leaves_a_valid_database_and_resumes(tmp_path: Path, m
         assert unhashed == 0, "재개 후에도 해시가 빠진 문서가 있습니다"
     finally:
         db.close()
+
+
+def _scanned(db_path: Path) -> int:
+    """자식이 지금까지 넣은 문서 수. 아직 못 읽을 상태면 0.
+
+    쓰는 쪽이 살아 있는 동안 읽는다. WAL이라 읽기는 막히지 않지만, 파일이
+    막 만들어진 순간에는 표가 없거나 잠겨 있을 수 있어 오류를 진행 없음으로
+    본다 — 여기서 예외를 던지면 시험이 경합에 걸려 무너진다.
+    """
+    if not db_path.exists():
+        return 0
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.5)
+    except sqlite3.Error:
+        return 0
+    try:
+        return con.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    except sqlite3.Error:
+        return 0
+    finally:
+        con.close()
+
+
+def _open_after_kill(db_path: Path, attempts: int = 10) -> Database:
+    """강제 종료 직후에는 잠깐 열리지 않을 수 있다.
+
+    윈도우는 죽은 프로세스의 파일 핸들을 곧바로 놓지 않아서, 그 사이의 열기
+    시도가 'disk I/O error'로 떨어진다. 제품의 결함이 아니라 종료 직후의
+    한때이므로 짧게 기다렸다 다시 연다.
+    """
+    for attempt in range(attempts):
+        db = Database(db_path)
+        try:
+            db.con.execute("SELECT 1")
+            return db
+        except sqlite3.Error:
+            db.close()
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.3)
+    raise AssertionError("도달할 수 없음")

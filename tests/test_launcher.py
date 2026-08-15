@@ -142,6 +142,51 @@ def test_forgetting_keeps_the_data(make_dialog, tmp_path: Path, monkeypatch):
     assert not _rows(dialog)
 
 
+def test_deleting_a_project_removes_its_files(make_dialog, tmp_path: Path, monkeypatch):
+    entry = registry.create_project("총무팀 인수인계", tmp_path)
+    open_project_at(entry.path).close()
+    monkeypatch.setattr(
+        launcher_view.QMessageBox, "warning",
+        lambda *args, **kwargs: launcher_view.QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(launcher_view.QMessageBox, "information", lambda *a, **k: None)
+
+    dialog = make_dialog(tmp_path)
+    dialog._delete(entry)
+
+    assert not entry.db_path.exists()
+    assert not _rows(dialog)
+
+
+def test_declining_the_delete_warning_keeps_everything(make_dialog, tmp_path: Path, monkeypatch):
+    entry = registry.create_project("총무팀 인수인계", tmp_path)
+    open_project_at(entry.path).close()
+    monkeypatch.setattr(
+        launcher_view.QMessageBox, "warning",
+        lambda *args, **kwargs: launcher_view.QMessageBox.StandardButton.No,
+    )
+
+    dialog = make_dialog(tmp_path)
+    dialog._delete(entry)
+
+    assert entry.db_path.exists()
+    assert len(_rows(dialog)) == 1
+
+
+def test_the_open_project_cannot_be_deleted(make_dialog, tmp_path: Path):
+    """열려 있는 DB를 지우려 하면 윈도우가 막는다. 누르기 전에 막는 편이 낫다."""
+    entry = registry.create_project("총무팀 인수인계", tmp_path)
+    open_project_at(entry.path).close()
+
+    dialog = make_dialog(tmp_path, current=entry.path)
+    row = _rows(dialog)[0]
+
+    delete = next(
+        b for b in row.findChildren(launcher_view.QPushButton) if b.text() == "완전 삭제"
+    )
+    assert not delete.isEnabled()
+
+
 def test_window_asks_to_switch_when_the_project_button_is_pressed(qapp, tmp_path: Path,
                                                                  monkeypatch):
     monkeypatch.setattr(MainWindow, "_resume_if_pending", lambda self: None)
