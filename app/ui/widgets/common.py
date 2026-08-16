@@ -105,6 +105,17 @@ class WrapLabel(QLabel):
         super().setText(text)
         self._fit()
 
+    def sizeHint(self):  # noqa: N802 — Qt 규약
+        """지금 폭에서 실제로 필요한 높이를 알린다.
+
+        최소 높이만 잡아 두면 부모 판(QFrame)은 여전히 한 줄짜리 sizeHint로
+        높이를 계산해 안쪽 글자를 잘라 낸다 — 문서 화면에서 그렇게 나왔다.
+        """
+        hint = super().sizeHint()
+        if self.wordWrap() and self.width() > 0:
+            hint.setHeight(max(hint.height(), self.heightForWidth(self.width())))
+        return hint
+
     def _fit(self) -> None:
         if not self.wordWrap() or self.width() <= 0:
             return
@@ -112,6 +123,18 @@ class WrapLabel(QLabel):
         # 같은 값을 다시 넣으면 레이아웃이 무한히 다시 계산된다.
         if needed > 0 and needed != self.minimumHeight():
             self.setMinimumHeight(needed)
+            # 크기만 바꾸면 부모 레이아웃은 이미 자리를 다 잡은 뒤라 다시
+            # 계산하지 않는다 — 그래서 뒤 위젯이 이 판 위에 겹쳐 그려졌다.
+            # 위로 두 층까지 "다시 재라"고 말해 준다.
+            widget = self
+            for _ in range(3):
+                widget = widget.parentWidget()
+                if widget is None:
+                    break
+                layout = widget.layout()
+                if layout is not None:
+                    layout.invalidate()
+                    layout.activate()
 
 
 class _WrapFrame(QFrame):

@@ -1354,6 +1354,72 @@ def test_clicking_a_chip_asks_that_question(make_window, db, monkeypatch):
     assert captured["q"] == chip.text()
 
 
+# ── 읽히는 화면 ─────────────────────────────────────────────────────
+
+def test_wrapped_text_gets_the_height_it_needs(qapp):
+    """두 줄로 접힌 글자가 한 줄 높이만 받으면 아랫줄이 잘려 안 읽힌다.
+
+    문서 화면 오른쪽 패널의 안내 문구가 실제로 그렇게 뭉개졌다. 원인은
+    설치되지 않은 글꼴 이름이 QFont에 남아 **재는 글꼴과 그리는 글꼴이
+    갈린** 것이었다(theme.font_family 참고).
+    """
+    from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
+
+    from app.ui.widgets import UnknownBlock
+
+    holder = QWidget()
+    column = QVBoxLayout(holder)
+    block = UnknownBlock(
+        "파일 수정일로만 판정했습니다. 폴더째 복사하면 바뀌는 값이라 "
+        "반복 주기 계산에서는 제외됩니다."
+    )
+    column.addWidget(block)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFixedWidth(360)
+    scroll.setWidget(holder)
+    scroll.resize(360, 400)
+    scroll.show()
+    qapp.processEvents()
+    try:
+        label = block.label
+        assert label.height() >= label.heightForWidth(label.width())
+        assert block.height() >= label.height()
+    finally:
+        scroll.close()
+        scroll.deleteLater()
+
+
+def test_the_font_actually_exists_on_this_machine():
+    """없는 글꼴 이름을 쓰면 잰 높이와 그린 높이가 어긋난다."""
+    from PySide6.QtGui import QFontDatabase
+
+    name = theme.font_family()
+    assert name, "설치된 후보 글꼴이 하나도 없다"
+    assert name in set(QFontDatabase.families())
+    assert name in theme.stylesheet("medium")
+
+
+def test_every_screen_separates_controls_from_results(make_window, db, qapp):
+    """조작하는 자리(흰 띠)와 결과를 읽는 자리(회색 바탕)를 가른다.
+
+    같은 흰 바탕에 이어 놓으면 어디까지가 입력이고 어디부터가 결과인지
+    눈이 매번 다시 찾는다 — 질문 화면이 그렇다는 지적을 받았다.
+    """
+    from PySide6.QtWidgets import QWidget
+
+    _add_docs(db)
+    window = make_window(db)
+    for key in ("tasks", "documents", "ask"):
+        window.go(key)
+        view = window.views[key]
+        headers = [
+            w for w in view.findChildren(QWidget) if w.objectName() == "ViewHeader"
+        ]
+        assert headers, f"{key} 화면에 머리띠가 없다"
+        assert view.objectName() == "Canvas", f"{key} 화면 바탕이 회색이 아니다"
+
+
 # ── 글자 크기 하한 ──────────────────────────────────────────────────
 
 def test_small_text_size_never_goes_below_the_readable_floor():

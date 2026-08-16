@@ -110,9 +110,21 @@ class DocumentsView(QWidget):
         self._summaries = SummaryRunner(db.path, self)
         self._summaries.done.connect(self._on_summary_done)
 
+        self.setObjectName("Canvas")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(theme.SP_XL, theme.SP_XL, theme.SP_XL, theme.SP_XL)
-        outer.setSpacing(theme.SP_MD)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # 찾는 자리(제목·검색·거르개)와 보는 자리(표·상세)를 흰 띠와 회색
+        # 바탕으로 가른다. 업무·일정·질문 화면이 모두 이 구조다.
+        header = QWidget()
+        header.setObjectName("ViewHeader")
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        head = QVBoxLayout(header)
+        head.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_LG)
+        head.setSpacing(theme.SP_MD)
 
         # 다른 화면과 같은 자리에 같은 ⓘ를 둔다. 설명이 어디 있는지 매번
         # 찾게 하지 않는 것이 도움말의 절반이다.
@@ -129,18 +141,24 @@ class DocumentsView(QWidget):
             Qt.AlignmentFlag.AlignVCenter,
         )
         title_row.addStretch(1)
-        outer.addLayout(title_row)
-        outer.addLayout(self._build_search())
-        outer.addLayout(self._build_filters())
+        head.addLayout(title_row)
+        head.addLayout(self._build_search())
+        head.addLayout(self._build_filters())
+        outer.addWidget(header)
+
+        body_wrap = QVBoxLayout()
+        body_wrap.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_LG)
+        body_wrap.setSpacing(theme.SP_SM)
 
         self.summary = muted_label("")
-        outer.addWidget(self.summary)
+        body_wrap.addWidget(self.summary)
 
         body = QHBoxLayout()
         body.setSpacing(theme.SP_LG)
         body.addLayout(self._build_table(), 1)
         body.addWidget(self._build_detail())
-        outer.addLayout(body, 1)
+        body_wrap.addLayout(body, 1)
+        outer.addLayout(body_wrap, 1)
 
         self.empty = EmptyState(
             "아직 찾은 문서가 없습니다",
@@ -156,9 +174,12 @@ class DocumentsView(QWidget):
         row.setSpacing(theme.SP_SM)
         self.search = QLineEdit()
         self.search.setPlaceholderText("파일명·본문·작성자 검색")
+        self.search.setMinimumHeight(theme.CONTROL_H)
         self.search.returnPressed.connect(self.refresh)
         row.addWidget(self.search, 1)
         find = QPushButton("검색")
+        find.setMinimumHeight(theme.CONTROL_H)
+        find.setMinimumWidth(88)
         find.clicked.connect(self.refresh)
         row.addWidget(find)
         return row
@@ -223,7 +244,7 @@ class DocumentsView(QWidget):
 
     def _build_detail(self) -> QWidget:
         panel = QScrollArea()
-        panel.setObjectName("Content")
+        panel.setObjectName("DetailPane")
         panel.setWidgetResizable(True)
         panel.setFixedWidth(theme.DETAIL_PANEL_W)
         # 긴 경로 때문에 가로 스크롤이 생기면 패널이 지저분해진다. 경로는
@@ -231,10 +252,9 @@ class DocumentsView(QWidget):
         panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         inner = QWidget()
-        inner.setObjectName("Content")
-        inner.setAutoFillBackground(True)
+        inner.setObjectName("PaneBody")
         self.detail = QVBoxLayout(inner)
-        self.detail.setContentsMargins(theme.SP_LG, 0, theme.SP_SM, theme.SP_LG)
+        self.detail.setContentsMargins(theme.SP_LG, theme.SP_LG, theme.SP_LG, theme.SP_LG)
         self.detail.setSpacing(theme.SP_MD)
         self.detail.setAlignment(Qt.AlignmentFlag.AlignTop)
         panel.setWidget(inner)

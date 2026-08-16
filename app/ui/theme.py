@@ -227,6 +227,28 @@ def color(name: str) -> str:
 
 
 # ── 타이포 ──────────────────────────────────────────────────────────
+# 글꼴 후보. **설치된 것 하나만 골라 쓴다** — 목록을 그대로 스타일시트에 넣으면
+# 없는 글꼴(Pretendard)이 QFont의 이름이 되고, 재는 것은 그 이름의 대체 글꼴,
+# 그리는 것은 한글 대체 글꼴이 되어 **줄 높이가 어긋난다.** 실제로 안내 문구의
+# 둘째 줄이 판 밖으로 잘려 나갔다(문서 화면 오른쪽 패널).
+FONT_CANDIDATES = ("Pretendard", "Malgun Gothic", "맑은 고딕", "Segoe UI")
+_family: str | None = None
+
+
+def font_family() -> str:
+    """이 PC에 실제로 설치된 첫 글꼴. 없으면 시스템 기본에 맡긴다."""
+    global _family
+    if _family is None:
+        try:
+            from PySide6.QtGui import QFontDatabase
+
+            installed = set(QFontDatabase.families())
+        except Exception:                      # pragma: no cover — Qt 없이 부를 때
+            installed = set()
+        _family = next((name for name in FONT_CANDIDATES if name in installed), "")
+    return _family
+
+
 FONT_FAMILY = '"Pretendard", "Malgun Gothic", "맑은 고딕", sans-serif'
 FS_TITLE = 20
 FS_SECTION = 16
@@ -247,6 +269,12 @@ TEXT_SIZE_ICONS = {"small": "text-small", "medium": "text-medium", "large": "tex
 # 붙어 뭉개진다 — 알파벳은 10px에서도 읽히지만 한글은 아니다. '작게'를
 # 골랐을 때 부기 글자가 11px이 되어 실제로 뭉개졌다.
 MIN_FONT_PX = 12
+
+
+def _qss_family() -> str:
+    """스타일시트에 넣을 글꼴 이름. 설치된 것이 없으면 항목 자체를 비운다."""
+    name = font_family()
+    return f'"{name}"' if name else "sans-serif"
 
 
 def _scaled(base: int, scale: float) -> int:
@@ -300,6 +328,15 @@ def apply(app, text_size: str = "medium", mode: str = "system") -> str:
     QSS는 어두운데 위젯이 직접 칠한 색은 밝은, 반쪽짜리 화면이 나온다.
     """
     resolved = apply_mode(mode)
+    # 앱 기본 글꼴도 같은 이름으로 맞춘다. 스타일시트만 바꾸면 위젯이 들고
+    # 있는 QFont는 옛 이름 그대로라, **재는 글꼴과 그리는 글꼴이 갈린다.**
+    name = font_family()
+    if name:
+        from PySide6.QtGui import QFont
+
+        font = QFont(app.font())
+        font.setFamily(name)
+        app.setFont(font)
     app.setStyleSheet(stylesheet(text_size))
     return resolved
 
@@ -319,7 +356,7 @@ def stylesheet(text_size: str = "medium") -> str:
     title = _scaled(FS_TITLE, scale)
     return f"""
     * {{
-        font-family: {FONT_FAMILY};
+        font-family: {_qss_family()};
         font-size: {body}px;
         color: {TEXT};
     }}
@@ -505,6 +542,12 @@ def stylesheet(text_size: str = "medium") -> str:
         border-radius: {RADIUS}px;
     }}
     QWidget#PaneBody {{ background: transparent; }}
+    /* 문서 화면 오른쪽 상세. 표와 나란히 서는 흰 판이라 같은 테두리를 쓴다. */
+    QScrollArea#DetailPane {{
+        background: {BG};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS}px;
+    }}
     QLabel#ParaNumber {{ color: {TEXT_DISABLED}; font-size: {small}px; }}
     QLabel#ParaText {{ color: {TEXT_MUTED}; line-height: 180%; }}
     /* 인용된 대목. 답에서 이 문장을 가져왔다는 뜻이라 본문 색으로 세우고
