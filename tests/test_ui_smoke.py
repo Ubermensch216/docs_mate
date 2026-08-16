@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel  # noqa: E402
 from app.db import Database  # noqa: E402
 from app.ui import theme  # noqa: E402
 from app.ui.shell import MainWindow  # noqa: E402
+from app.ui.views import ask as ask_view  # noqa: E402
 from app.ui.views import tasks as tasks_view  # noqa: E402
 
 
@@ -95,14 +96,14 @@ def test_window_starts_on_onboarding_when_no_source(make_window, db):
     window = make_window(db)
     assert window.stack.currentWidget() is window.views["onboarding"]
     # 자료원이 없으면 메뉴를 누를 수 없어야 한다 — 빈 화면으로 보내지 않는다.
-    assert not window.sidebar._buttons["tasks"].isEnabled()
+    assert not window.topbar._buttons["tasks"].isEnabled()
 
 
 def test_window_switches_to_tasks_once_source_exists(make_window, db):
     _add_docs(db)
     window = make_window(db)
     assert window.stack.currentWidget() is window.views["tasks"]
-    assert window.sidebar._buttons["tasks"].isEnabled()
+    assert window.topbar._buttons["tasks"].isEnabled()
 
 
 @pytest.mark.parametrize("key", ["tasks", "calendar", "documents", "ask"])
@@ -570,9 +571,10 @@ def test_ask_view_renders_answer_with_citations_and_feedback(make_window, db):
     texts = _labels(view)
     buttons = _button_widgets(view)
     assert any("6건이 확인됩니다" in t for t in texts)
-    # 근거는 답변 카드 안이 아니라 옆 패널에 상주한다 — 답이 주인공이고
-    # 근거가 세로 공간을 잡아먹지 않아야 한다.
-    assert any("행감자료.hwp" in t for t in _labels(view.drawer))
+    # 근거는 답변 옆에 목록으로 서고, 고른 근거의 **원문**이 오른쪽 칸에 펴진다
+    # (디자인 개선안 1c — 근거 대조형).
+    assert any("행감자료.hwp" in t for t in _labels(view))
+    assert view._selected == 1
     # 피드백은 둘뿐이다 — '부정확'과 '출처가 틀림'의 차이를 처음 쓰는 사람이
     # 판단할 수 없어 하나로 합쳤다(디자인 개선안 진단 7).
     assert any("맞아요" in b.text() for b in buttons)
@@ -1073,30 +1075,30 @@ def test_ask_answer_renders_citation_marks_as_links(make_window, db):
     assert any('<a href="1"' in t for t in labels), labels
 
 
-def test_evidence_panel_shows_every_citation_beside_the_answer(make_window, db):
+def test_evidence_list_shows_every_citation_beside_the_answer(make_window, db):
     """근거는 답 옆에 상주한다 — 열고 닫게 하면 결국 아무도 안 누른다."""
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
     view._render_answer(_answered())
 
-    assert not view.drawer.isHidden()
-    body = chr(10).join(_labels(view.drawer))
+    body = chr(10).join(_labels(view))
     assert "2025_행감_제출자료.hwp" in body
     assert "정수장_운영현황.xlsx" in body
 
 
-def test_clicking_a_citation_points_at_that_evidence(make_window, db):
-    """상주 패널에서는 [n]이 '열기'가 아니라 '이것'이라고 짚어 주는 일이다."""
+def test_clicking_a_citation_opens_that_document_on_the_right(make_window, db):
+    """[n]은 '열기'가 아니라 '이 문서의 원문을 오른쪽에 펴라'는 뜻이다."""
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
     view._render_answer(_answered())
 
     view._show_citation("2")
+    assert view._selected == 2
     picked = [
-        w for w in view.drawer.findChildren(QFrame)
-        if w.objectName() == "EvidenceEntry" and w.property("picked")
+        w for w in view.findChildren(QFrame)
+        if w.objectName() == "EvidencePick" and w.property("picked")
     ]
     assert len(picked) == 1
     assert "정수장_운영현황.xlsx" in chr(10).join(
@@ -1115,8 +1117,8 @@ def test_answer_text_with_angle_brackets_is_not_swallowed_as_markup(make_window,
     assert any("A&lt;B" in t and "C&amp;D" in t for t in labels), labels
 
 
-def test_new_question_closes_the_previous_evidence(make_window, db, monkeypatch):
-    """지난 답의 근거가 서랍에 남아 있으면 새 답의 근거로 오해한다."""
+def test_new_question_clears_the_previous_evidence(make_window, db, monkeypatch):
+    """지난 답의 근거가 남아 있으면 새 답의 근거로 오해한다."""
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
@@ -1124,11 +1126,12 @@ def test_new_question_closes_the_previous_evidence(make_window, db, monkeypatch)
 
     view._render_answer(_answered())
     view._show_citation("1")
-    assert not view.drawer.isHidden()
+    assert view._selected == 1
 
     view.input.setText("다른 질문")
     view._ask()
-    assert view.drawer.isHidden()
+    assert view._selected is None
+    assert view.reader_tabs.isHidden() or not view.reader_tabs.isVisible()
 
 
 def test_followup_buttons_build_complete_standalone_questions(make_window, db):
@@ -1217,13 +1220,13 @@ def test_scope_selection_survives_a_refresh(make_window, db):
     assert view.task_scope.currentData() == task_id
 
 
-# ── 3분할 레이아웃 (질문 화면 재설계) ───────────────────────────────
+# ── 근거 대조형 레이아웃 (디자인 개선안 1c) ─────────────────────────
 
-def test_ask_screen_is_three_columns_with_evidence_on_the_side(make_window, db, qapp):
-    """답이 주인공이고 근거는 그 옆에 붙는다.
+def test_ask_screen_puts_the_source_text_next_to_the_answer(make_window, db, qapp):
+    """답을 믿을지 판단하려면 원문을 봐야 한다. 원본을 열면 화면을 떠난다.
 
-    전에는 전부 세로로 쌓여 근거 목록이 공간을 다 먹고 정작 답이 화면
-    아래로 밀려났다.
+    그래서 원문을 앱 안 오른쪽 칸에 편다. 답변 칸은 읽기 좋은 폭으로 묶고,
+    남는 폭은 전부 원문이 받는다 — 대조가 이 화면의 일이다.
     """
     from app.search.rag import Answer, Citation
 
@@ -1242,58 +1245,98 @@ def test_ask_screen_is_three_columns_with_evidence_on_the_side(make_window, db, 
     ))
     qapp.processEvents()
 
-    assert view.guide.isVisible()
-    assert not view.drawer.isHidden()
-    # 가운데가 가장 넓어야 한다 — 주인공이기 때문이다.
-    assert view.result_area.width() > view.guide.width()
-    assert view.result_area.width() > view.drawer.width()
+    assert not view.reader.isHidden()
+    assert view.reader.width() > view.answer_pane.width()
+    assert view.answer_pane.width() <= ask_view.ANSWER_MAX_W
 
 
-def test_guide_column_collapses_on_a_narrow_window(make_window, db, qapp):
-    """셋을 다 욱여넣으면 답변 칸이 두세 낱말마다 줄바꿈되는 폭이 된다."""
+def test_reader_still_fits_at_the_smallest_window(make_window, db, qapp):
+    """가장 좁은 창에서도 두 칸이 선다.
+
+    세로 사이드바(216px)를 걷어 낸 것이 이걸 가능하게 했다. 예전 구조에서는
+    최소 창에서 원문 칸이 한 줄에 대여섯 글자가 되어 접어야 했다.
+    """
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     window = make_window(db)
     window.show()
-
-    window.resize(1800, 860)
+    window.resize(*theme.WINDOW_MIN)
     qapp.processEvents()
     window.go("ask")
     view = window.views["ask"]
     qapp.processEvents()
-    assert view.guide.isVisible()
 
+    assert not view.reader.isHidden()
+    assert view.reader.width() >= 480
+
+
+def test_navigation_lives_in_the_top_bar(make_window, db, qapp):
+    """세로 사이드바를 걷어 내고 메뉴를 상단 띠로 옮겼다 (디자인 개선안 1c).
+
+    본문이 폭을 다 받는 것이 이 변경의 목적이다 — 질문 화면이 '답변 | 원문'
+    두 칸을 쓰는데 왼쪽에 216px 메뉴까지 서면 원문 칸이 대조하기 어려워진다.
+    """
+    _add_docs(db)
+    window = make_window(db)
     window.resize(*theme.WINDOW_MIN)
+    window.show()
     qapp.processEvents()
-    assert not view.guide.isVisible()
+
+    assert [b.text() for b in window.topbar._buttons.values()] == [
+        "업무", "일정", "문서", "질문"
+    ]
+    assert not hasattr(window, "sidebar")
+    # 메뉴가 답하는 질문은 버리지 않고 툴팁으로 옮겼다.
+    assert "내 업무는 무엇인가" in window.topbar._buttons["tasks"].toolTip()
+
+    window.topbar._buttons["documents"].click()
+    assert window.stack.currentWidget() is window.views["documents"]
+    assert window.topbar._buttons["documents"].isChecked()
+
+    # 본문은 창 폭을 그대로 받는다.
+    assert window.stack.width() == window.width()
 
 
-def test_question_guide_uses_chips(make_window, db):
+def test_top_bar_keeps_the_read_only_promise_and_the_progress(make_window, db, qapp):
+    """사이드바에 있던 두 가지(읽기 전용 약속·인수인계 진행도)를 잃지 않는다."""
+    from app.core import handover
+
+    _add_docs(db)
+    db.con.execute("INSERT INTO tasks(id, name) VALUES (1, '행정사무감사')")
+    window = make_window(db)
+    window.show()
+    qapp.processEvents()
+
+    assert window.topbar.promise.text() == "읽기 전용"
+    assert not window.topbar.handover.isHidden()
+    assert "인수인계" in window.topbar.handover.text()
+
+    # 잴 것이 없으면 숨긴다 — 분석 전의 0%는 잘못된 질책이다.
+    window.topbar.show_handover(handover.summarize({}))
+    assert window.topbar.handover.isHidden()
+
+
+def test_question_chips_sit_in_one_row(make_window, db):
     from PySide6.QtWidgets import QPushButton
 
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     view = make_window(db).views["ask"]
 
-    chips = [b for b in view.guide.findChildren(QPushButton)
-             if b.objectName() == "Chip"]
-    assert len(chips) >= len(view.EXAMPLES if hasattr(view, "EXAMPLES") else [])
-    assert chips, "질문 가이드가 칩으로 보여야 한다"
+    chips = [b for b in view.findChildren(QPushButton) if b.objectName() == "Chip"]
+    assert len(chips) == len(ask_view.EXAMPLES)
 
 
-def test_recent_questions_appear_as_chips(make_window, db):
-    """이미 물어본 것을 다시 꺼내 쓸 수 있어야 한다."""
-    from PySide6.QtWidgets import QPushButton
-
+def test_past_questions_live_in_the_history_menu(make_window, db):
+    """예시와 지난 질문을 두 목록으로 쌓으면 같은 문장이 두 번 보인다."""
     source_id = db.add_source(r"D:\자료")
     _seed_chunked_doc(db, source_id)
     db.save_question("작년 행감 자료 뭐야?", "답", "[]", False, "m")
     view = make_window(db).views["ask"]
     view.refresh()
 
-    labels = [b.toolTip() for b in view.guide.findChildren(QPushButton)
-              if b.objectName() == "Chip"]
-    assert "작년 행감 자료 뭐야?" in labels
+    assert "내 질문 기록 1건" in view.history.text()
+    assert [a.text() for a in view.history.menu().actions()] == ["작년 행감 자료 뭐야?"]
 
 
 def test_clicking_a_chip_asks_that_question(make_window, db, monkeypatch):
@@ -1306,10 +1349,9 @@ def test_clicking_a_chip_asks_that_question(make_window, db, monkeypatch):
     captured = {}
     monkeypatch.setattr(view._runner, "start",
                         lambda q, scope=None: captured.update(q=q) or True)
-    chip = next(b for b in view.guide.findChildren(QPushButton)
-                if b.objectName() == "Chip")
+    chip = next(b for b in view.findChildren(QPushButton) if b.objectName() == "Chip")
     chip.click()
-    assert captured["q"] == chip.toolTip()
+    assert captured["q"] == chip.text()
 
 
 # ── 글자 크기 하한 ──────────────────────────────────────────────────

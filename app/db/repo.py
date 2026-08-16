@@ -359,9 +359,12 @@ class Database:
         """같은 것을 여러 번 저장한 것으로 보이는 파일들 (자신 포함).
 
         '이 파일이 최신본인가'는 이름으로 답할 수 없다 — `_최종`과
-        `_진짜최종`이 나란히 있는 것이 현장이다. 그래서 **같은 업무의 같은
-        단계**에 놓인 파일, 그리고 내용이 완전히 같은 사본을 후보로 모은다.
-        판정은 화면이 아니라 파일 수정 시각이 한다.
+        `_진짜최종`이 나란히 있는 것이 현장이다. 그래서 **같은 해, 같은 업무의
+        같은 단계**에 놓인 파일과 내용이 완전히 같은 사본을 후보로 모은다.
+
+        연도를 함께 묶는 것이 중요하다. 단계 이름만으로 모으면 2022년 자료와
+        2025년 자료가 '같은 것의 다른 버전'으로 나란히 서는데, 그건 버전이
+        아니라 해마다 반복된 다른 문서다.
         """
         return self.con.execute(
             """
@@ -374,8 +377,10 @@ class Database:
                       SELECT hash FROM documents WHERE id = :doc))
                OR d.id IN (
                       SELECT s.doc_id FROM task_steps s
-                      WHERE s.doc_id IS NOT NULL AND (s.task_id, s.label) IN (
-                          SELECT x.task_id, x.label FROM task_steps x WHERE x.doc_id = :doc)))
+                      WHERE s.doc_id IS NOT NULL
+                        AND (s.task_id, s.label, s.year) IN (
+                          SELECT x.task_id, x.label, x.year FROM task_steps x
+                          WHERE x.doc_id = :doc)))
             ORDER BY d.fs_mtime DESC, d.filename
             """,
             {"doc": doc_id},

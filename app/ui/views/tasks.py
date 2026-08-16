@@ -246,7 +246,6 @@ class TasksView(QWidget):
         marks.addWidget(Badge(f"{status.symbol(status.CONFIRMED)} 확인함 {done}", "ok"))
         if done < len(tasks):
             marks.addWidget(Badge(f"◐ 확인 필요 {len(tasks) - done}", "attention"))
-        marks.addWidget(_progress_chip(progress))
         marks.addStretch(1)
         self.head.addLayout(marks)
 
@@ -1224,22 +1223,6 @@ class SplitDialog(QDialog):
             item.data(Qt.ItemDataRole.UserRole) for item in dialog.list.selectedItems()
         ]
         return picked, dialog.name.text().strip()
-
-
-def _progress_chip(progress) -> QLabel:
-    """진행도를 뱃지 옆에 한 조각으로 붙인다.
-
-    막대 그래프를 여기 두지 않는다. 이 줄은 '확인함 5 / 확인 필요 2'처럼
-    세는 자리이고, 막대는 사이드바 아래에 상주한다(shell.py) — 같은 수치를
-    두 곳에서 다른 모양으로 크게 그리면 화면이 진행도 이야기만 하게 된다.
-    """
-    chip = QLabel(progress.headline())
-    chip.setObjectName("MetaChip")
-    chip.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-    nxt = progress.next_step()
-    if nxt is not None:
-        chip.setToolTip("다음에 확인할 것 · " + nxt.sentence())
-    return chip
 
 
 def _stage_line(label: str, done: int, limit: int, total_key: str | None) -> str:

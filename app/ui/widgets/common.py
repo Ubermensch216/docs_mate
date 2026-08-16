@@ -70,6 +70,67 @@ def clear_layout(layout) -> None:
             child.deleteLater()
 
 
+def fit_wrapped_text(widget: QWidget) -> None:
+    """줄바꿈되는 글자를 담은 판이 제 높이를 갖게 한다.
+
+    Qt는 위젯의 sizePolicy에 hasHeightForWidth가 켜져 있을 때만 "이 폭이면
+    높이가 얼마"를 부모 레이아웃에 알린다. 기본값은 꺼짐이라, 안에 든
+    QLabel이 두 줄로 접혀도 판은 한 줄 높이만 받는다 — 그러면 뒤따르는
+    위젯이 그 위에 겹쳐 그려져 **글자가 통째로 안 읽힌다**(문서 화면
+    오른쪽 패널에서 실제로 그렇게 나왔다).
+
+    새로 만드는 판에 줄바꿈 글자를 넣을 때는 이 함수를 함께 부를 것.
+    """
+    policy = widget.sizePolicy()
+    policy.setHeightForWidth(True)
+    widget.setSizePolicy(policy)
+
+
+class WrapLabel(QLabel):
+    """줄바꿈되는 글자. **접힌 만큼 실제로 자리를 차지한다.**
+
+    Qt에서 word-wrap QLabel은 스크롤 영역이나 폭이 정해진 칸 안에서 제 높이를
+    제대로 못 받는 일이 흔하다. 부모 레이아웃은 한 줄 높이를 주는데 글자는 두
+    줄로 접혀서, 뒤따르는 위젯이 그 위에 겹쳐 그려진다 — 문서 화면 오른쪽
+    패널에서 안내 문구가 통째로 뭉개져 안 읽혔다.
+
+    폭이 정해질 때마다 그 폭에서 필요한 높이를 스스로 최소 높이로 잡는다.
+    """
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        super().resizeEvent(event)
+        self._fit()
+
+    def setText(self, text: str) -> None:  # noqa: N802 — Qt 규약
+        super().setText(text)
+        self._fit()
+
+    def _fit(self) -> None:
+        if not self.wordWrap() or self.width() <= 0:
+            return
+        needed = self.heightForWidth(self.width())
+        # 같은 값을 다시 넣으면 레이아웃이 무한히 다시 계산된다.
+        if needed > 0 and needed != self.minimumHeight():
+            self.setMinimumHeight(needed)
+
+
+class _WrapFrame(QFrame):
+    """줄바꿈 글자를 담는 판의 공통 바탕. 높이를 폭에서 계산해 돌려준다."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        fit_wrapped_text(self)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 — Qt 규약
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 — Qt 규약
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            return layout.heightForWidth(width)
+        return super().heightForWidth(width)
+
+
 def view_title(text: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName("ViewTitle")
@@ -123,14 +184,14 @@ class SectionHeader(QWidget):
 
 
 def body_label(text: str, wrap: bool = True) -> QLabel:
-    label = QLabel(text)
+    label = WrapLabel(text) if wrap else QLabel(text)
     label.setWordWrap(wrap)
     return label
 
 
 def muted_label(text: str, small: bool = False, wrap: bool = True) -> QLabel:
     """wrap=False는 줄바꿈되면 어색한 짧은 표시(뱃지 옆 문구 등)에 쓴다."""
-    label = QLabel(text)
+    label = WrapLabel(text) if wrap else QLabel(text)
     label.setObjectName("Small" if small else "Muted")
     label.setWordWrap(wrap)
     if not wrap:
@@ -168,6 +229,18 @@ class ElidedLabel(QLabel):
         super().resizeEvent(event)
         self._render()
 
+    def minimumSizeHint(self):  # noqa: N802 — Qt 규약
+        """폭을 요구하지 않는다.
+
+        QLabel은 줄바꿈이 없으면 **글자 전체 폭**을 최소 크기로 요구한다.
+        그래서 긴 파일명 하나가 카드·패널을 뷰포트보다 넓게 밀어내고, 가로
+        스크롤을 꺼 둔 칸에서는 오른쪽이 잘려 나간다(실제로 그렇게 나왔다).
+        접는 위젯이 폭을 요구하는 것은 그 자체로 모순이다.
+        """
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
     def _render(self) -> None:
         width = max(self.width(), 80)
         QLabel.setText(
@@ -183,7 +256,7 @@ def note_label(text: str) -> QLabel:
     설명이 길거나 한 번 읽으면 그만인 것은 InfoDot으로 접는다. 상주해야
     하는 안내(예: 지금 이 목록이 무엇으로 정렬돼 있는가)만 여기 남긴다.
     """
-    label = QLabel(text)
+    label = WrapLabel(text)
     label.setObjectName("PageNote")
     label.setWordWrap(True)
     label.setMaximumWidth(theme.CONTENT_MAX_W)
@@ -465,7 +538,7 @@ class Badge(QLabel):
         return cls.state(status.from_confidence(level), parent=parent)
 
 
-class Card(QFrame):
+class Card(_WrapFrame):
     """카드 컨테이너. 내용은 body 레이아웃에 채운다.
 
     tone="attention"/"primary"면 왼쪽에 굵은 띠가 붙는다. 뱃지 하나보다
@@ -480,7 +553,7 @@ class Card(QFrame):
         self.body.setSpacing(theme.SP_MD)
 
 
-class SubPanel(QFrame):
+class SubPanel(_WrapFrame):
     """카드 안에서 근거를 묶는 옅은 판. 어디까지가 근거인지 경계를 만든다."""
 
     def __init__(self, parent: QWidget | None = None):
@@ -526,7 +599,7 @@ class EvidenceChip(QPushButton):
         self.clicked.connect(lambda: self.opened.emit(self.doc_id))
 
 
-class UnknownBlock(QFrame):
+class UnknownBlock(_WrapFrame):
     """자료에서 확인되지 않은 구간을 명시적으로 그린다.
 
     빈칸으로 두면 사용자는 시스템이 놓쳤는지 자료가 없는지 구분할 수 없다.
@@ -538,7 +611,7 @@ class UnknownBlock(QFrame):
         self.setObjectName("UnknownBlock")
         row = QHBoxLayout(self)
         row.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
-        self.label = QLabel()
+        self.label = WrapLabel()
         self.label.setObjectName("UnknownText")
         self.label.setWordWrap(True)
         row.addWidget(self.label)

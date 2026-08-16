@@ -61,6 +61,17 @@ LIGHT = {
     "CYCLE_STRONG": "#1B5FA8",   # 담당자가 확인함
     "CYCLE_SOFT": "#A7C1DB",     # 자료에서 추정
     "CYCLE_WEAK": "#DFE6EE",     # 자료가 부족
+
+    # 상단 띠. 길(메뉴)과 내용(본문)을 가르는 검은 띠 하나 — 밝은 벌에서도
+    # 어두운 벌에서도 같은 자리에 같은 무게로 선다. 색을 늘리는 것이 아니라
+    # 구조를 만드는 것이라 두 벌이 같은 값을 쓴다.
+    "NAVBAR_BG": "#15181D",
+    "NAVBAR_TEXT": "#FFFFFF",
+    "NAVBAR_MUTED": "#98A1AD",
+    "NAVBAR_DISABLED": "#5A626D",
+    "NAVBAR_HOVER": "#20242B",
+    "NAVBAR_ACTIVE": "#2C323B",
+    "NAVBAR_LINE": "#333941",
 }
 
 # 어두운 벌. 밝은 벌을 그대로 뒤집지 않는다 — 순수한 검정 바탕에 순백 글자는
@@ -99,6 +110,16 @@ DARK = {
     "CYCLE_STRONG": "#3E7FBE",
     "CYCLE_SOFT": "#31506F",
     "CYCLE_WEAK": "#2B3038",
+    # 상단 띠. 길(메뉴)과 내용(본문)을 가르는 검은 띠 하나 — 밝은 벌에서도
+    # 어두운 벌에서도 같은 자리에 같은 무게로 선다. 색을 늘리는 것이 아니라
+    # 구조를 만드는 것이라 두 벌이 같은 값을 쓴다.
+    "NAVBAR_BG": "#15181D",
+    "NAVBAR_TEXT": "#FFFFFF",
+    "NAVBAR_MUTED": "#98A1AD",
+    "NAVBAR_DISABLED": "#5A626D",
+    "NAVBAR_HOVER": "#20242B",
+    "NAVBAR_ACTIVE": "#2C323B",
+    "NAVBAR_LINE": "#333941",
 }
 
 # 정적 분석기와 예전 호출부를 위해 밝은 벌의 값을 모듈 전역으로 펼쳐 둔다.
@@ -131,6 +152,13 @@ CONFIRMED_SOFT: str
 CYCLE_STRONG: str
 CYCLE_SOFT: str
 CYCLE_WEAK: str
+NAVBAR_BG: str
+NAVBAR_TEXT: str
+NAVBAR_MUTED: str
+NAVBAR_DISABLED: str
+NAVBAR_HOVER: str
+NAVBAR_ACTIVE: str
+NAVBAR_LINE: str
 
 _mode = "light"          # 지금 칠해져 있는 벌 (light | dark)
 
@@ -244,9 +272,11 @@ SP_XS, SP_SM, SP_MD, SP_LG, SP_XL = 4, 8, 12, 16, 24
 RADIUS = 8
 RADIUS_SM = 4
 
-SIDEBAR_W = 216           # 메뉴 이름 아래 한 줄 설명이 들어갈 폭
-TOPBAR_H = 48
+# 상단 띠. 메뉴가 여기 산다(세로 사이드바는 걷어 냈다 — shell.TopBar 참고).
+TOPBAR_H = 52
 ROW_H = 36
+# 입력칸·드롭다운·버튼의 공통 높이. 한 줄에 서면 같은 키여야 한 벌로 보인다.
+CONTROL_H = 36
 DETAIL_PANEL_W = 360
 # 근거 서랍(계획서 §28: 360~420px). 인용문이 서너 줄로 접히는 최소 폭이다.
 DRAWER_W = 380
@@ -296,21 +326,67 @@ def stylesheet(text_size: str = "medium") -> str:
     QMainWindow, QWidget#Content, QDialog {{ background: {BG}; }}
 
     /* ── 상단 바 ── */
+    /* ── 상단 띠 (길 + 상태) ──
+       메뉴가 여기 산다. 세로 사이드바를 걷어 낸 자리라 본문은 폭을 다 받는다.
+       띠를 어둡게 두는 것은 장식이 아니라 구획이다 — 길과 내용이 같은 색이면
+       화면이 한 덩어리로 보이고 메뉴가 "위에 있는 글자"가 된다. */
     QWidget#TopBar {{
-        background: {BG};
-        border-bottom: 1px solid {BORDER};
+        background: {NAVBAR_BG};
     }}
     QLabel#AppName {{
-        font-size: {section}px;
-        font-weight: 600;
-        color: {TEXT};
+        font-size: {round(body * 1.05)}px;
+        font-weight: 700;
+        color: {NAVBAR_TEXT};
     }}
+    QFrame#TopDivider {{ background: {NAVBAR_LINE}; border: none; }}
+    /* 메뉴 한 칸. 고른 것은 글자를 희게 세우고 판을 한 단계 밝혀 둔다 —
+       색 하나가 아니라 무게와 바탕이 함께 움직여야 눈이 바로 찾는다. */
+    QPushButton#NavTab {{
+        background: transparent;
+        border: none;
+        border-radius: {RADIUS_SM}px;
+        color: {NAVBAR_MUTED};
+        font-size: {body}px;
+        padding: {SP_SM}px {SP_MD}px;
+    }}
+    QPushButton#NavTab:hover {{ background: {NAVBAR_HOVER}; color: {NAVBAR_TEXT}; }}
+    QPushButton#NavTab:checked {{
+        background: {NAVBAR_ACTIVE};
+        color: {NAVBAR_TEXT};
+        font-weight: 700;
+    }}
+    QPushButton#NavTab:disabled {{ color: {NAVBAR_DISABLED}; }}
+    QPushButton#TopLink {{
+        background: transparent;
+        border: none;
+        color: {NAVBAR_MUTED};
+        font-size: {small}px;
+        padding: {SP_XS}px {SP_SM}px;
+    }}
+    QPushButton#TopLink:hover {{ color: {NAVBAR_TEXT}; }}
+    /* 원본을 건드리지 않는다는 약속. 사이드바 아래에 두던 것을 띠로 옮겼다 —
+       확인 문구는 늘 보여야 하고, 초록 점 하나로도 눈에 걸린다. */
+    QLabel#TopPromise {{
+        color: {CONFIRMED};
+        font-size: {small}px;
+        font-weight: 700;
+    }}
+    /* 인수인계 진행도. 사이드바가 없어진 자리를 대신한다. */
+    QPushButton#TopHandover {{
+        background: {NAVBAR_ACTIVE};
+        border: none;
+        border-radius: 10px;
+        color: {NAVBAR_TEXT};
+        font-size: {small}px;
+        padding: {SP_XS}px {SP_MD}px;
+    }}
+    QPushButton#TopHandover:hover {{ background: {NAVBAR_HOVER}; }}
     QLabel#StatusText {{
-        color: {TEXT_MUTED};
+        color: {NAVBAR_MUTED};
         font-size: {small}px;
     }}
     QProgressBar#TopProgress {{
-        background: {SURFACE_ALT};
+        background: {NAVBAR_ACTIVE};
         border: none;
         border-radius: 3px;
         height: 6px;
@@ -318,80 +394,6 @@ def stylesheet(text_size: str = "medium") -> str:
     }}
     QProgressBar#TopProgress::chunk {{
         background: {PRIMARY};
-        border-radius: 3px;
-    }}
-
-    /* ── 사이드바 ──
-       본문보다 한 단계 짙은 판으로 깔아 "여기는 길, 저기는 내용"을 만든다.
-       고른 메뉴는 흰 카드로 떠오르고 왼쪽에 강조 띠가 선다 — 지금 어디에
-       있는지가 색 하나가 아니라 모양으로 보여야 한다. */
-    QWidget#Sidebar {{
-        background: {NAV_BG};
-        border-right: 1px solid {BORDER_STRONG};
-    }}
-    QPushButton#NavItem {{
-        background: transparent;
-        border: none;
-        border-left: 3px solid transparent;
-        border-radius: {RADIUS}px;
-        padding: 0;
-        text-align: left;
-        min-height: 58px;
-    }}
-    QPushButton#NavItem:hover {{ background: {NAV_HOVER}; }}
-    QPushButton#NavItem:checked {{
-        background: {BG};
-        border-left: 3px solid {PRIMARY};
-    }}
-    /* 이름과 설명은 층이 다르다. 크기(15/12)·무게(700/400)·색(본문/부기)
-       세 가지를 한꺼번에 벌려야 두 줄이 한 문장으로 뭉치지 않는다. */
-    QLabel#NavTitle {{
-        color: {TEXT};
-        font-size: {round(body * 1.08)}px;
-        font-weight: 700;
-    }}
-    QLabel#NavHint {{
-        color: {TEXT_SUBTLE};
-        font-size: {small}px;
-        font-weight: 400;
-    }}
-    QPushButton#NavItem:checked QLabel#NavTitle {{ color: {PRIMARY}; }}
-    QPushButton#NavItem:checked QLabel#NavHint {{ color: {TEXT_MUTED}; }}
-    QPushButton#NavItem:disabled QLabel#NavTitle,
-    QPushButton#NavItem:disabled QLabel#NavHint {{ color: {TEXT_DISABLED}; }}
-    QLabel#NavSection {{
-        color: {TEXT_DISABLED};
-        font-size: {small}px;
-        font-weight: 700;
-        padding: {SP_SM}px {SP_MD}px {SP_SM}px {SP_MD}px;
-    }}
-
-    /* 원본을 건드리지 않는다는 약속. 흐린 한 줄로 흘리면 읽히지 않는다. */
-    QFrame#NavPromise {{
-        background: {BG};
-        border: 1px solid {BORDER};
-        border-radius: {RADIUS_SM}px;
-    }}
-    QLabel#NavPromiseHead {{ color: {CONFIRMED}; font-size: {small}px; font-weight: 700; }}
-    QLabel#NavPromiseText {{ color: {TEXT_MUTED}; font-size: {small}px; }}
-
-    /* ── 인수인계 진행도 (§18) ──
-       메뉴 아래, 약속 위. 막대는 얇게 — 이건 지금 하는 일이 아니라 배경에
-       두는 눈금이다. 굵게 그리면 화면이 진행도 이야기를 하기 시작한다. */
-    QFrame#NavProgress {{
-        background: {BG};
-        border: 1px solid {BORDER};
-        border-radius: {RADIUS_SM}px;
-    }}
-    QLabel#NavProgressText {{ color: {TEXT}; font-size: {small}px; font-weight: 700; }}
-    QLabel#NavProgressHint {{ color: {TEXT_MUTED}; font-size: {small}px; }}
-    QProgressBar#NavProgressBar {{
-        background: {SURFACE_ALT};
-        border: none;
-        border-radius: 3px;
-    }}
-    QProgressBar#NavProgressBar::chunk {{
-        background: {CONFIRMED};
         border-radius: 3px;
     }}
 
@@ -495,11 +497,14 @@ def stylesheet(text_size: str = "medium") -> str:
     QLabel#EvidenceName {{ color: {TEXT}; font-weight: 600; }}
     QFrame#SubPanel[picked="true"] {{ border: 2px solid {CONFIRMED}; }}
 
-    /* 원문 칸. 본문 바탕보다 살짝 낮춰 '읽는 자리'로 구분한다. */
+    /* 원문 칸. 답변 카드와 나란히 서는 흰 판이라 같은 테두리·모서리를 쓴다 —
+       둘이 다른 물건처럼 보이면 '답과 그 근거'라는 관계가 끊긴다. */
     QWidget#ReaderPane {{
-        background: {CANVAS};
-        border-left: 1px solid {BORDER};
+        background: {BG};
+        border: 1px solid {BORDER};
+        border-radius: {RADIUS}px;
     }}
+    QWidget#PaneBody {{ background: transparent; }}
     QLabel#ParaNumber {{ color: {TEXT_DISABLED}; font-size: {small}px; }}
     QLabel#ParaText {{ color: {TEXT_MUTED}; line-height: 180%; }}
     /* 인용된 대목. 답에서 이 문장을 가져왔다는 뜻이라 본문 색으로 세우고
@@ -840,13 +845,17 @@ def stylesheet(text_size: str = "medium") -> str:
 
     QFrame#Divider {{ background: {BORDER}; max-height: 1px; border: none; }}
 
+    /* 버튼은 입력칸과 같은 모서리를 쓴다. 한 줄에 나란히 설 때 모서리가
+       다르면 두 부품을 붙여 놓은 것처럼 보인다. */
     QPushButton {{
         background: {BG};
         border: 1px solid {BORDER_STRONG};
-        border-radius: {RADIUS_SM}px;
+        border-radius: {RADIUS}px;
         padding: {SP_SM}px {SP_LG}px;
+        color: {TEXT};
     }}
-    QPushButton:hover {{ background: {SURFACE}; }}
+    QPushButton:hover {{ background: {SURFACE}; border-color: {TEXT_SUBTLE}; }}
+    QPushButton:pressed {{ background: {SURFACE_ALT}; }}
     QPushButton:disabled {{ color: {TEXT_DISABLED}; border-color: {BORDER}; }}
     QPushButton#Primary {{
         background: {PRIMARY};
@@ -958,20 +967,48 @@ def stylesheet(text_size: str = "medium") -> str:
         font-weight: 700;
     }}
 
+    /* ── 입력 컨트롤 ──
+       입력칸·드롭다운·버튼이 한 줄에 서면 높이와 모서리가 같아야 한 벌로
+       보인다. 제각각이면 그 줄이 "붙여 놓은 부품"처럼 읽힌다. */
     QLineEdit, QComboBox {{
         background: {BG};
         border: 1px solid {BORDER_STRONG};
-        border-radius: {RADIUS_SM}px;
-        padding: {SP_SM}px {SP_MD}px;
+        border-radius: {RADIUS}px;
+        padding: 0 {SP_MD}px;
+        min-height: {CONTROL_H - 2}px;
+        color: {TEXT};
         selection-background-color: {PRIMARY_SOFT};
         selection-color: {TEXT};
     }}
-    QLineEdit:focus, QComboBox:focus {{ border-color: {PRIMARY}; }}
+    QLineEdit:hover, QComboBox:hover {{ border-color: {TEXT_SUBTLE}; }}
+    /* 포커스는 테두리 색만 바꾸지 않는다 — 얇은 테를 한 겹 더 둘러야
+       "지금 여기에 글자가 들어간다"가 멀리서도 보인다. */
+    QLineEdit:focus, QComboBox:focus {{
+        border: 2px solid {PRIMARY};
+        padding: 0 {SP_MD - 1}px;
+    }}
+    QLineEdit:disabled, QComboBox:disabled {{
+        background: {SURFACE};
+        color: {TEXT_DISABLED};
+        border-color: {BORDER};
+    }}
+    /* 화살표는 손대지 않는다. QSS로 drop-down·down-arrow를 건드리는 순간
+       Qt가 플랫폼 화살표 그리기를 멈추는데, 웹에서 쓰는 border 삼각형 기법은
+       Qt에서 회색 네모로 나오고 image를 비우면 화살표가 아예 사라진다.
+       실제로 둘 다 그려 보고 확인했다 — 기본 화살표가 가장 낫다. */
     QComboBox QAbstractItemView {{
         background: {BG};
         border: 1px solid {BORDER_STRONG};
+        border-radius: {RADIUS_SM}px;
+        padding: {SP_XS}px;
+        outline: none;
         selection-background-color: {PRIMARY_SOFT};
         selection-color: {TEXT};
+    }}
+    QComboBox QAbstractItemView::item {{
+        min-height: {ROW_H - 6}px;
+        padding: 0 {SP_SM}px;
+        border-radius: {RADIUS_SM}px;
     }}
     QCheckBox {{ spacing: {SP_SM}px; }}
 

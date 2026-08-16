@@ -79,12 +79,12 @@ EXAMPLES = [
 
 # 답변 칸. 너무 넓으면 한 줄이 길어져 다음 줄 첫 글자를 눈이 못 찾고,
 # 너무 좁으면 문장이 두세 낱말마다 끊긴다.
-ANSWER_MIN_W = 360
-ANSWER_MAX_W = 470
-# 이보다 좁아지면 원문 칸을 접고 답변만 남긴다. 둘 다 욱여넣으면 원문이
-# 한 줄에 대여섯 글자가 되어 대조라는 목적 자체가 사라진다.
-READER_MIN_WINDOW = 1000
+ANSWER_MIN_W = 380
+ANSWER_MAX_W = 560
 RECENT_LIMIT = 5
+# 칩 줄에 세워 둘 질문 수. 넷을 넘기면 한 줄을 넘어가고, 셋 아래면 고를 것이
+# 없어 보인다.
+CHIP_LIMIT = 4
 # 원문에서 처음부터 펼쳐 두는 대목 수. 인용된 대목은 이 수와 무관하게 항상 편다.
 OPEN_SECTIONS = 3
 
@@ -109,13 +109,28 @@ class AskView(QWidget):
         self._reader_tab = SOURCE
         self._expanded: set[int] = set()       # 원문을 다 편 문서
 
+        self.setObjectName("Canvas")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
         root = QVBoxLayout(self)
-        root.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, 0)
-        root.setSpacing(theme.SP_MD)
-        root.addLayout(self._build_header())
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # 묻는 자리와 읽는 자리를 흰 띠와 회색 바탕으로 가른다. 둘이 같은 흰
+        # 바탕에 이어져 있으면 어디까지가 조작이고 어디부터가 결과인지 눈이
+        # 매번 다시 찾아야 한다 — 다른 화면이 쓰는 구조를 이 화면만 따르지
+        # 않고 있었다.
+        header = QWidget()
+        header.setObjectName("ViewHeader")
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        head_wrap = QVBoxLayout(header)
+        head_wrap.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_LG)
+        head_wrap.setSpacing(theme.SP_MD)
+        head_wrap.addLayout(self._build_header())
+        root.addWidget(header)
 
         body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
+        body.setContentsMargins(theme.SP_XL, theme.SP_LG, theme.SP_XL, theme.SP_LG)
         body.setSpacing(theme.SP_LG)
         body.addWidget(self._build_answer_pane())
         body.addWidget(self._build_reader_pane(), 1)
@@ -146,12 +161,13 @@ class AskView(QWidget):
         row.setSpacing(theme.SP_SM)
         self.input = QLineEdit()
         self.input.setPlaceholderText("작년 행감 때 수질 관련해서 뭘 제출했어?")
-        self.input.setMinimumHeight(36)
+        self.input.setMinimumHeight(theme.CONTROL_H)
         self.input.returnPressed.connect(self._ask)
         row.addWidget(self.input, 1)
         self.send = QPushButton("질문")
         self.send.setObjectName("Primary")
-        self.send.setMinimumHeight(36)
+        self.send.setMinimumHeight(theme.CONTROL_H)
+        self.send.setMinimumWidth(88)
         self.send.clicked.connect(self._ask)
         row.addWidget(self.send)
         head.addLayout(row)
@@ -167,6 +183,7 @@ class AskView(QWidget):
         chips.addStretch(1)
         self.history = QPushButton("내 질문 기록")
         self.history.setObjectName("Quiet")
+        self.history.setMinimumHeight(theme.CONTROL_H - 4)
         self.history.setCursor(Qt.CursorShape.PointingHandCursor)
         chips.addWidget(self.history)
         head.addLayout(chips)
@@ -176,9 +193,14 @@ class AskView(QWidget):
         scope_row.setSpacing(theme.SP_SM)
         self.task_scope = QComboBox()
         self.task_scope.setToolTip("특정 업무의 자료만 근거로 삼습니다")
+        self.task_scope.setMinimumWidth(200)
         self.year_scope = QComboBox()
         self.year_scope.setToolTip("특정 연도의 자료만 근거로 삼습니다")
-        scope_row.addWidget(muted_label("찾는 범위", small=True, wrap=False))
+        self.year_scope.setMinimumWidth(160)
+        scope_row.addWidget(
+            muted_label("찾는 범위", small=True, wrap=False), 0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
         scope_row.addWidget(self.task_scope)
         scope_row.addWidget(self.year_scope)
         scope_row.addStretch(1)
@@ -212,10 +234,21 @@ class AskView(QWidget):
         scroll.setMaximumWidth(ANSWER_MAX_W)
 
         holder = QWidget()
-        self.answer_column = QVBoxLayout(holder)
-        self.answer_column.setContentsMargins(0, 0, theme.SP_MD, theme.SP_LG)
-        self.answer_column.setSpacing(theme.SP_MD)
-        self.answer_column.setAlignment(Qt.AlignmentFlag.AlignTop)
+        holder.setObjectName("PaneBody")
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, theme.SP_SM, 0)
+        column.setSpacing(theme.SP_MD)
+        column.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # 답은 흰 카드 위에 놓는다. 회색 바탕과 갈라야 "여기부터가 답"이
+        # 경계로 보인다.
+        card = Card()
+        card.setObjectName("AnswerCard")
+        self.answer_column = card.body
+        column.addWidget(card)
+        # 카드가 남는 세로 공간을 다 먹으면 내용 아래로 흰 판이 길게 늘어진다.
+        column.addStretch(1)
+
         scroll.setWidget(holder)
         self.answer_pane = scroll
         return scroll
@@ -256,11 +289,6 @@ class AskView(QWidget):
         self._reader_tab = key
         self._render_reader()
 
-    # ── 반응형 ──────────────────────────────────────────────────────
-    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
-        super().resizeEvent(event)
-        self.reader.setVisible(self.width() >= READER_MIN_WINDOW)
-
     # ── 준비 상태 ───────────────────────────────────────────────────
     def refresh(self) -> None:
         ready, message = self._readiness()
@@ -293,10 +321,19 @@ class AskView(QWidget):
         ).fetchall()
         asked = [row["question"] for row in rows]
 
-        for text in [t for t in EXAMPLES if t not in asked]:
+        # 최근에 물은 것을 앞에 두고 모자라는 자리를 예시로 채워 **늘 네 개**를
+        # 유지한다. 예전에는 이미 물어본 예시를 지우기만 해서 칩이 하나만 남는
+        # 일이 생겼다 — 한 개짜리 목록은 목록이 아니다.
+        chips: list[str] = []
+        for text in [*asked, *EXAMPLES]:
+            if text not in chips:
+                chips.append(text)
+        for text in chips[:CHIP_LIMIT]:
             self.chip_row.addWidget(self._chip(text))
 
-        self.history.setText(f"내 질문 기록 {len(asked)}건  ▾" if asked else "내 질문 기록 ▾")
+        # 버튼에 메뉴를 달면 Qt가 화살표를 스스로 그린다. 글자에 ▾를 또 적으면
+        # 화살표가 두 개로 보인다.
+        self.history.setText(f"내 질문 기록 {len(asked)}건" if asked else "내 질문 기록")
         self.history.setEnabled(bool(asked))
         # 메뉴의 주인은 항상 그 메뉴를 여는 버튼이다 — 부모가 없으면 파이썬이
         # 함수가 끝나는 순간 수거해 빈 메뉴가 뜬다(업무 화면에서 겪었다).
@@ -393,6 +430,25 @@ class AskView(QWidget):
                 "그 근거의 원문을 오른쪽에서 바로 확인할 수 있습니다.",
             )
         )
+        self._reader_placeholder()
+
+    def _reader_placeholder(self) -> None:
+        """빈 원문 칸을 흰 여백으로 두지 않는다.
+
+        아무 설명 없는 큰 빈 판은 "고장 났나"로 읽힌다. 무엇이 여기 올지
+        한 줄로 말해 두면 같은 여백이 '아직 비어 있는 자리'가 된다.
+        """
+        clear_layout(self.reader_column)
+        self.reader_tabs.setVisible(False)
+        hint = muted_label(
+            "답을 만들면 근거로 쓴 문서의 원문이 여기에 펼쳐집니다. 인용한 "
+            "대목은 칠해서 보여 주고, 같은 문서가 여러 벌이면 어느 것이 "
+            "최신본인지도 여기서 확인할 수 있습니다."
+        )
+        hint.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.reader_column.addStretch(1)
+        self.reader_column.addWidget(hint)
+        self.reader_column.addStretch(2)
 
     # ── 질문 ────────────────────────────────────────────────────────
     def _ask(self) -> None:
@@ -406,8 +462,7 @@ class AskView(QWidget):
         self._answer = None
         self._selected = None
         self._expanded.clear()
-        clear_layout(self.reader_column)
-        self.reader_tabs.setVisible(False)
+        self._reader_placeholder()
         clear_layout(self.answer_column)
         self.answer_column.addWidget(_thinking(question))
 
@@ -492,7 +547,7 @@ class AskView(QWidget):
 
         column = QVBoxLayout()
         column.setSpacing(theme.SP_XS)
-        name = ElidedLabel(info.get("filename") or citation.filename)
+        name = ElidedLabel(citation.filename or info.get("filename") or "")
         name.setObjectName("EvidenceName" if chosen else "Muted")
         column.addWidget(name)
         column.addWidget(muted_label(self._evidence_note(citation, info), small=True))
@@ -659,7 +714,7 @@ class AskView(QWidget):
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mark.setFixedSize(20, 20)
         head.addWidget(mark)
-        head.addWidget(section_title(info.get("filename") or citation.filename), 1)
+        head.addWidget(section_title(citation.filename or info.get("filename") or ""), 1)
         open_button = QPushButton("원본 열기")
         open_button.setObjectName("Quiet")
         open_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -744,14 +799,30 @@ class AskView(QWidget):
         )
         counts = self.db.section_counts([row["id"] for row in siblings])
         newest = max((row["fs_mtime"] or "") for row in siblings)
+        # 수정 시각이 같은 파일이 여럿이면 시각으로는 가릴 수 없다. 그때
+        # 둘 다 '최신본'이라고 붙이면 답이 아니라 혼란이다 — 못 가린다고
+        # 말하고 판단 재료(문단 수)를 옆에 둔다.
+        tied = sum(1 for row in siblings if (row["fs_mtime"] or "") == newest) > 1
+        if tied:
+            self.reader_column.addWidget(
+                UnknownBlock(
+                    "가장 최근에 저장된 파일이 여럿입니다. 파일 수정 시각이 같아 "
+                    "어느 것이 최신본인지 시각으로는 가릴 수 없습니다 — 문단 수와 "
+                    "내용을 직접 확인하세요."
+                )
+            )
         for row in siblings:
             latest = bool(row["fs_mtime"]) and row["fs_mtime"] == newest
             panel = SubPanel()
-            panel.setProperty("picked", latest)
+            panel.setProperty("picked", latest and not tied)
             top = QHBoxLayout()
             top.setSpacing(theme.SP_SM)
-            top.addWidget(Badge("최신본" if latest else "이전 저장",
-                                "ok" if latest else "neutral"))
+            if latest:
+                mark = Badge("가장 최근 저장" if tied else "최신본",
+                             "attention" if tied else "ok")
+            else:
+                mark = Badge("이전 저장", "neutral")
+            top.addWidget(mark)
             top.addWidget(muted_label(row["ext"] or "", small=True, wrap=False))
             top.addStretch(1)
             panel.body.addLayout(top)

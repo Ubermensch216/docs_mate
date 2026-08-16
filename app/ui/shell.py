@@ -48,25 +48,28 @@ NAV = [
     ("ask", "ask", "질문", "자료에 직접 물어본다"),
 ]
 
-# 아이콘이 글자와 같은 색으로 움직여야 "선택된 한 덩어리"로 읽힌다.
-# 이모지는 OS가 제 색으로 칠해 버려 이걸 할 수 없다 (icons.py 참고).
-#
-# 색을 여기에 담아 두지 않고 이름만 적는 이유: 테마를 바꾸면 theme의 색이
-# 갈리는데, 값을 import 시점에 복사해 두면 이 표만 옛 색으로 남는다.
-NAV_ICON_TOKENS = {
-    "normal": "TEXT_MUTED",
-    "checked": "PRIMARY",
-    "disabled": "TEXT_DISABLED",
-}
-NAV_ICON_FALLBACK = {"tasks": "▤", "calendar": "▦", "documents": "▧", "ask": "▪"}
+# 가로 띠에서는 메뉴가 글자만으로 선다. 아이콘을 함께 넣으면 넷이 한 줄에
+# 늘어서면서 폭을 두 배로 먹고, 정작 오른쪽 상태 문구가 밀려난다.
+# 아이콘 체계(icons.py)는 설정 창처럼 세로 목록이 있는 곳에서 계속 쓴다.
 
 
 class TopBar(QWidget):
-    """분석 진행 상황이 상주하는 자리. 누르면 단계별 상세·실패 목록으로 간다."""
+    """검은 띠 하나에 길과 상태를 모두 담는다 (디자인 개선안 1c).
+
+    왼쪽부터 제품·프로젝트 → 메뉴 넷 → 오른쪽에 지금 상태. 세로 사이드바를
+    쓰던 것을 가로 띠로 바꾼 이유는 본문이다 — 질문 화면이 '답변 | 근거 원문'
+    두 칸을 쓰는데 왼쪽에 216px 메뉴까지 서면 원문 칸이 대조하기 어려운 폭이
+    된다. 메뉴는 하루에 몇 번 누르고 본문은 내내 읽는다.
+
+    띠를 어둡게 두는 것은 색을 늘리는 것이 아니라 **길과 내용을 가르는** 일이다.
+    본문은 그대로 무채색 종이로 남는다.
+    """
 
     settings_requested = Signal()
     status_clicked = Signal()
     project_requested = Signal()
+    navigated = Signal(str)
+    handover_clicked = Signal()
 
     def __init__(self, project_name: str = "", parent: QWidget | None = None):
         super().__init__(parent)
@@ -76,14 +79,14 @@ class TopBar(QWidget):
 
         row = QHBoxLayout(self)
         row.setContentsMargins(theme.SP_LG, 0, theme.SP_LG, 0)
-        row.setSpacing(theme.SP_MD)
+        row.setSpacing(theme.SP_SM)
 
         logo_path = Path(__file__).parent / "assets" / "logo.png"
         if logo_path.exists():
             mark = QLabel()
             mark.setPixmap(
                 QPixmap(str(logo_path)).scaledToHeight(
-                    theme.TOPBAR_H - 16, Qt.TransformationMode.SmoothTransformation
+                    theme.TOPBAR_H - 22, Qt.TransformationMode.SmoothTransformation
                 )
             )
             row.addWidget(mark)
@@ -96,34 +99,81 @@ class TopBar(QWidget):
         # 화면만 봐서는 구별되지 않는다 — 업무 목록도 문서 목록도 남의 것과
         # 똑같이 생겼다. 누르면 다른 인수인계로 갈아탄다.
         self.project = QPushButton(project_name or "프로젝트")
-        self.project.setObjectName("Link")
+        self.project.setObjectName("TopLink")
         self.project.setCursor(Qt.CursorShape.PointingHandCursor)
         self.project.setToolTip("지금 열려 있는 인수인계 — 눌러서 다른 인수인계로 바꿉니다")
         self.project.clicked.connect(self.project_requested.emit)
         row.addWidget(self.project)
+
+        row.addWidget(_bar_divider())
+
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self._buttons: dict[str, QPushButton] = {}
+        for index, (key, _icon, label, question) in enumerate(NAV, start=1):
+            button = QPushButton(label)
+            button.setObjectName("NavTab")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            # 메뉴 이름 아래 적던 질문은 띠에서는 들어갈 자리가 없다. 버리지
+            # 않고 툴팁으로 옮긴다 — 처음 쓰는 사람에게 이 넷이 각각 무엇에
+            # 답하는지가 이 제품의 뼈대다.
+            button.setToolTip(f"{label} — {question}  (Ctrl+{index})")
+            button.clicked.connect(lambda _=False, k=key: self.navigated.emit(k))
+            self.group.addButton(button)
+            row.addWidget(button)
+            self._buttons[key] = button
+
         row.addStretch(1)
+
+        # 인수인계 진행도. 사이드바가 없어진 자리를 대신한다 — 어느 화면에
+        # 있든 "얼마나 남았나"가 보여야 확인 작업이 끝이 있는 일로 느껴진다.
+        self.handover = QPushButton("")
+        self.handover.setObjectName("TopHandover")
+        self.handover.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.handover.clicked.connect(self.handover_clicked.emit)
+        self.handover.hide()
+        row.addWidget(self.handover)
 
         self.progress = QProgressBar()
         self.progress.setObjectName("TopProgress")
-        self.progress.setFixedWidth(160)
+        self.progress.setFixedWidth(140)
         self.progress.setTextVisible(False)
         self.progress.hide()
         row.addWidget(self.progress)
 
+        # 이 도구가 지키는 약속. 상태 문구 앞에 붙여 늘 함께 보이게 한다 —
+        # 원본을 건드리지 않는다는 것이 이 제품 채택의 조건이다.
+        self.promise = QLabel("읽기 전용")
+        self.promise.setObjectName("TopPromise")
+        self.promise.setToolTip("원본을 수정·이동·삭제·이름 변경하지 않습니다")
+        row.addWidget(self.promise)
+
         self.status = QPushButton("자료원이 없습니다")
-        self.status.setObjectName("Link")
+        self.status.setObjectName("TopLink")
         self.status.setCursor(Qt.CursorShape.PointingHandCursor)
         self.status.setToolTip("눌러서 단계별 진행과 실패 목록을 봅니다")
         self.status.clicked.connect(self.status_clicked.emit)
         row.addWidget(self.status)
 
         settings = QPushButton("⚙")
-        settings.setObjectName("Link")
-        settings.setFixedWidth(32)
+        settings.setObjectName("TopLink")
+        settings.setFixedWidth(30)
         settings.setToolTip("설정")
         settings.clicked.connect(self.settings_requested.emit)
         row.addWidget(settings)
 
+    # ── 길 ──────────────────────────────────────────────────────────
+    def select(self, key: str) -> None:
+        button = self._buttons.get(key)
+        if button:
+            button.setChecked(True)
+
+    def setEnabledNav(self, enabled: bool) -> None:
+        for button in self._buttons.values():
+            button.setEnabled(enabled)
+
+    # ── 상태 ────────────────────────────────────────────────────────
     def show_progress(self, done: int, total: int, note: str = "") -> None:
         if total <= 0:
             self.progress.hide()
@@ -139,197 +189,27 @@ class TopBar(QWidget):
         self.progress.hide()
         self.status.setText(text)
 
-
-class NavItem(QPushButton):
-    """메뉴 한 칸. 이름 아래에 그 메뉴가 답하는 질문을 함께 적는다.
-
-    글자를 버튼 텍스트 하나로 넣으면 이름과 질문의 크기를 나눌 수 없어
-    둘 다 같은 무게로 읽힌다. 그래서 라벨을 버튼 안에 넣고, 라벨은 마우스를
-    통과시켜 버튼 어디를 눌러도 눌리게 한다.
-
-    이름과 질문은 **다른 층위**다. 이름은 내가 가는 곳, 질문은 그곳이 답하는
-    것 — 둘을 붙여 놓으면 두 줄짜리 한 문장으로 읽혀 위계가 사라진다.
-    글자 크기·무게·색을 벌리고 줄 사이도 벌려 두 층으로 갈라 놓는다.
-    """
-
-    def __init__(self, icon: str, label: str, question: str, shortcut: str,
-                 parent: QWidget | None = None):
-        super().__init__(parent)
-        self._icon = icon
-        self.setObjectName("NavItem")
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(f"{label} — {question}  ({shortcut})")
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(theme.SP_MD, theme.SP_MD, theme.SP_SM, theme.SP_MD)
-        row.setSpacing(theme.SP_MD)
-
-        self.mark = QLabel()
-        self.mark.setObjectName("NavIcon")
-        self.mark.setFixedSize(22, 22)
-        self.mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        text = QVBoxLayout()
-        text.setContentsMargins(0, 0, 0, 0)
-        text.setSpacing(theme.SP_XS)   # 이름과 질문이 붙으면 한 덩어리로 읽힌다
-        title = QLabel(label)
-        title.setObjectName("NavTitle")
-        text.addWidget(title)
-        hint = QLabel(question)
-        hint.setObjectName("NavHint")
-        text.addWidget(hint)
-        row.addLayout(text)
-        row.addStretch(1)
-
-        for child in (self.mark, title, hint):
-            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        self.toggled.connect(lambda _checked: self._paint_icon())
-        self._paint_icon()
-
-    def changeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
-        """비활성으로 바뀔 때도 아이콘이 글자를 따라가야 한다."""
-        super().changeEvent(event)
-        if event.type() == event.Type.EnabledChange:
-            self._paint_icon()
-
-    def _paint_icon(self) -> None:
-        state = (
-            "disabled" if not self.isEnabled()
-            else "checked" if self.isChecked()
-            else "normal"
-        )
-        color = theme.color(NAV_ICON_TOKENS[state])
-        art = icons.pixmap(self._icon, color, 20)
-        if art is None:
-            # QtSvg가 없는 환경. 이모지 대신 무채색 기호로 물러선다.
-            self.mark.setText(NAV_ICON_FALLBACK.get(self._icon, "·"))
-            self.mark.setStyleSheet(f"color: {color};")
-            return
-        self.mark.setPixmap(art)
-
-
-class Sidebar(QWidget):
-    navigated = Signal(str)
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setObjectName("Sidebar")
-        self.setFixedWidth(theme.SIDEBAR_W)
-        # QWidget을 상속한 위젯은 이 속성이 없으면 스타일시트의 배경·테두리를
-        # 그리지 않는다. 지금까지 사이드바가 흰 여백처럼 보이던 이유가 여기였다.
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-
-        column = QVBoxLayout(self)
-        column.setContentsMargins(theme.SP_SM, theme.SP_MD, theme.SP_SM, theme.SP_MD)
-        # 칸끼리 붙어 있으면 두 줄짜리 메뉴 넷이 여덟 줄 문단으로 보인다.
-        column.setSpacing(theme.SP_SM)
-
-        section = QLabel("어디를 볼까요")
-        section.setObjectName("NavSection")
-        column.addWidget(section)
-
-        self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        self._buttons: dict[str, QPushButton] = {}
-
-        for index, (key, icon, label, question) in enumerate(NAV, start=1):
-            button = NavItem(icon, label, question, f"Ctrl+{index}")
-            button.clicked.connect(lambda _=False, k=key: self.navigated.emit(k))
-            self.group.addButton(button)
-            column.addWidget(button)
-            self._buttons[key] = button
-
-        column.addStretch(1)
-
-        # 인수인계 진행도는 메뉴 아래에 상주한다 (계획서 §18·§6). 어느 화면에
-        # 있든 "얼마나 남았나"가 보여야, 확인 작업이 끝이 있는 일로 느껴진다.
-        # 업무 홈에만 두면 다른 화면에서 교정하는 동안에는 사라진다.
-        self.progress_box = QFrame()
-        self.progress_box.setObjectName("NavProgress")
-        progress_col = QVBoxLayout(self.progress_box)
-        progress_col.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
-        progress_col.setSpacing(theme.SP_XS)
-        self._progress_text = QLabel("인수인계 진행도")
-        self._progress_text.setObjectName("NavProgressText")
-        progress_col.addWidget(self._progress_text)
-        self.handover = QProgressBar()
-        self.handover.setObjectName("NavProgressBar")
-        self.handover.setTextVisible(False)
-        self.handover.setFixedHeight(6)
-        self.handover.setRange(0, 100)
-        progress_col.addWidget(self.handover)
-        self._progress_hint = QLabel("")
-        self._progress_hint.setObjectName("NavProgressHint")
-        self._progress_hint.setWordWrap(True)
-        progress_col.addWidget(self._progress_hint)
-        self.progress_box.hide()
-        column.addWidget(self.progress_box)
-
-        # 이 도구가 지키는 약속. 사이드바 바닥의 흐린 한 줄로 흘리면
-        # 읽히지 않는다 — 원본을 건드리지 않는다는 것이 채택의 조건이다.
-        promise = QFrame()
-        promise.setObjectName("NavPromise")
-        promise_box = QVBoxLayout(promise)
-        promise_box.setContentsMargins(theme.SP_MD, theme.SP_SM, theme.SP_MD, theme.SP_SM)
-        promise_box.setSpacing(theme.SP_XS)
-
-        head_row = QHBoxLayout()
-        head_row.setContentsMargins(0, 0, 0, 0)
-        head_row.setSpacing(theme.SP_XS)
-        self._lock = QLabel()
-        self._lock.setFixedSize(14, 14)
-        head_row.addWidget(self._lock)
-        head = QLabel("읽기 전용")
-        head.setObjectName("NavPromiseHead")
-        head_row.addWidget(head)
-        head_row.addStretch(1)
-        promise_box.addLayout(head_row)
-        hint = QLabel("원본은 수정하지 않습니다")
-        hint.setObjectName("NavPromiseText")
-        hint.setWordWrap(True)
-        promise_box.addWidget(hint)
-        column.addWidget(promise)
-
-        self.repaint_icons()
-
-    def repaint_icons(self) -> None:
-        """테마가 바뀌면 아이콘도 새 색으로 다시 그려야 한다.
-
-        스타일시트는 글자만 갈아 준다. 아이콘은 그릴 때 색을 넣는 방식이라
-        (icons.py), 다시 그리지 않으면 어두운 바탕에 어두운 선이 남는다.
-        """
-        lock_art = icons.pixmap("lock", theme.CONFIRMED, 14)
-        if lock_art is None:
-            self._lock.setText("▪")
-            self._lock.setStyleSheet(f"color: {theme.CONFIRMED};")
-        else:
-            self._lock.setPixmap(lock_art)
-        for button in self._buttons.values():
-            button._paint_icon()
-
-    def select(self, key: str) -> None:
-        button = self._buttons.get(key)
-        if button:
-            button.setChecked(True)
-
     def show_handover(self, progress) -> None:
         """진행도를 갱신한다. 잴 것이 없으면 아예 숨긴다 —
         분석이 끝나기 전의 0%는 '아무것도 안 했다'는 잘못된 질책이다."""
         if not progress.measured:
-            self.progress_box.hide()
+            self.handover.hide()
             return
-        self.progress_box.show()
-        self.handover.setValue(progress.percent)
-        self._progress_text.setText(progress.headline())
+        self.handover.show()
+        self.handover.setText(f"인수인계 {progress.percent}%")
+        lines = [area.sentence() for area in progress.measured]
         nxt = progress.next_step()
-        self._progress_hint.setText(nxt.sentence() if nxt else "확인할 것이 남지 않았습니다")
+        if nxt is not None:
+            lines.append(f"다음에 확인할 것 · {nxt.sentence()}")
+        self.handover.setToolTip(chr(10).join(lines))
 
-    def setEnabledNav(self, enabled: bool) -> None:
-        for button in self._buttons.values():
-            button.setEnabled(enabled)
+
+def _bar_divider() -> QFrame:
+    line = QFrame()
+    line.setObjectName("TopDivider")
+    line.setFixedWidth(1)
+    line.setFixedHeight(16)
+    return line
 
 
 class MainWindow(QMainWindow):
@@ -354,17 +234,13 @@ class MainWindow(QMainWindow):
         self.topbar.settings_requested.connect(self._open_settings)
         self.topbar.status_clicked.connect(self._open_status)
         self.topbar.project_requested.connect(self.switch_requested.emit)
+        self.topbar.navigated.connect(self.go)
+        # 진행도를 누르면 확인할 것이 있는 자리로 데려간다. 숫자만 보여 주고
+        # 어디로 가야 하는지 말하지 않으면 그 숫자는 채근일 뿐이다.
+        self.topbar.handover_clicked.connect(lambda: self.go("tasks"))
         outer.addWidget(self.topbar)
         self.stage_reports: dict[str, object] = {}
         self._status_dialog = None
-
-        split = QHBoxLayout()
-        split.setContentsMargins(0, 0, 0, 0)
-        split.setSpacing(0)
-
-        self.sidebar = Sidebar()
-        self.sidebar.navigated.connect(self.go)
-        split.addWidget(self.sidebar)
 
         self.stack = QStackedWidget()
         self.views: dict[str, QWidget] = {
@@ -376,8 +252,7 @@ class MainWindow(QMainWindow):
         }
         for view in self.views.values():
             self.stack.addWidget(view)
-        split.addWidget(self.stack, 1)
-        outer.addLayout(split, 1)
+        outer.addWidget(self.stack, 1)
 
         self.setCentralWidget(root)
 
@@ -390,7 +265,7 @@ class MainWindow(QMainWindow):
         # When(일정)과 What(업무)은 서로 되돌아간다 — 일정에서 업무를 열고,
         # 업무 상세에서 일정으로 넘어간다.
         self.views["tasks"].go_calendar.connect(lambda: self.go("calendar"))
-        # 업무 화면에서 확인·교정이 일어나면 사이드바 진행도가 그 자리에서 오른다.
+        # 업무 화면에서 확인·교정이 일어나면 상단 띠의 진행도가 그 자리에서 오른다.
         self.views["tasks"].state_changed.connect(self._sync_handover)
         self.views["calendar"].open_task.connect(self._open_task_from_calendar)
         # 답변의 근거 문서가 어느 업무의 것인지 눌러서 갈 수 있어야 한다.
@@ -419,7 +294,7 @@ class MainWindow(QMainWindow):
         if view is None:
             return
         self.stack.setCurrentWidget(view)
-        self.sidebar.select(key)
+        self.topbar.select(key)
         if hasattr(view, "refresh"):
             view.refresh()
         self._sync_handover()
@@ -433,7 +308,7 @@ class MainWindow(QMainWindow):
     def refresh(self) -> None:
         """자료원이 없으면 시작 마법사만 보여준다. 빈 메뉴를 누르게 하지 않는다."""
         has_source = bool(self.db.sources())
-        self.sidebar.setEnabledNav(has_source)
+        self.topbar.setEnabledNav(has_source)
         if not has_source:
             self.stack.setCurrentWidget(self.views["onboarding"])
             self.topbar.show_idle("자료원이 없습니다")
@@ -520,13 +395,13 @@ class MainWindow(QMainWindow):
             view.refresh()
 
     def _sync_handover(self) -> None:
-        """사이드바 진행도를 지금 상태로 맞춘다.
+        """상단 띠의 진행도를 지금 상태로 맞춘다.
 
         업무를 확인하거나 문서를 읽음 표시하면 그 자리에서 올라가야 한다.
         화면을 옮겨야만 갱신되면, 사용자는 자기가 한 일이 반영됐는지 확인하러
         메뉴를 한 번씩 눌러 보게 된다.
         """
-        self.sidebar.show_handover(handover.summarize(self.db.handover_counts()))
+        self.topbar.show_handover(handover.summarize(self.db.handover_counts()))
 
     def _open_status(self) -> None:
         from .status_dialog import StatusDialog
@@ -569,12 +444,9 @@ class MainWindow(QMainWindow):
     def restyle(self) -> None:
         """테마·글자 크기가 바뀐 뒤 창 전체를 새 색으로 다시 그린다.
 
-        스타일시트만으로 끝나지 않는 것이 둘 있다. 아이콘은 그릴 때 색을
-        넣고(icons.py), 일정 격자·업무 카드는 칸마다 색을 직접 칠한다. 둘 다
-        다시 만들어야 하므로 사이드바는 아이콘을, 본문은 화면 전체를 다시
-        조립한다.
+        스타일시트만으로 끝나지 않는 것이 있다. 일정 격자·업무 카드는 칸마다
+        색을 직접 칠하므로 화면을 다시 조립해야 한다.
         """
-        self.sidebar.repaint_icons()
         # 지금 보이는 화면만 다시 짓는다. 나머지는 그 화면으로 갈 때
         # go()가 어차피 refresh를 부르므로 미리 만들 이유가 없다.
         self._refresh_current()
