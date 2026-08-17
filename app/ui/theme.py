@@ -236,16 +236,25 @@ _family: str | None = None
 
 
 def font_family() -> str:
-    """이 PC에 실제로 설치된 첫 글꼴. 없으면 시스템 기본에 맡긴다."""
-    global _family
-    if _family is None:
-        try:
-            from PySide6.QtGui import QFontDatabase
+    """이 PC에 실제로 설치된 첫 글꼴. 없으면 시스템 기본에 맡긴다.
 
-            installed = set(QFontDatabase.families())
-        except Exception:                      # pragma: no cover — Qt 없이 부를 때
-            installed = set()
-        _family = next((name for name in FONT_CANDIDATES if name in installed), "")
+    **앱이 서기 전에는 묻지 않는다.** QFontDatabase를 QGuiApplication 없이
+    건드리면 Qt가 예외가 아니라 프로세스를 죽인다 — try/except로 못 막는다.
+    그리고 못 찾은 답은 캐시하지 않는다. 한 번 빈 값을 담아 두면 앱이 선
+    뒤에도 계속 빈 값을 돌려주어, 글꼴이 영영 안 맞는다(시험에서 잡혔다).
+    """
+    global _family
+    if _family:
+        return _family
+    try:
+        from PySide6.QtGui import QFontDatabase, QGuiApplication
+
+        if QGuiApplication.instance() is None:
+            return ""
+        installed = set(QFontDatabase.families())
+    except Exception:                      # pragma: no cover — Qt 없이 부를 때
+        return ""
+    _family = next((name for name in FONT_CANDIDATES if name in installed), "")
     return _family
 
 

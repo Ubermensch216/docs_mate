@@ -1390,14 +1390,40 @@ def test_wrapped_text_gets_the_height_it_needs(qapp):
         scroll.deleteLater()
 
 
-def test_the_font_actually_exists_on_this_machine():
-    """없는 글꼴 이름을 쓰면 잰 높이와 그린 높이가 어긋난다."""
+def test_only_an_installed_font_is_named(qapp):
+    """없는 글꼴 이름을 스타일시트에 적으면 **재는 글꼴과 그리는 글꼴이 갈린다.**
+
+    Pretendard가 깔려 있지 않은 PC에서 그 이름을 그대로 쓰는 바람에 줄
+    높이가 어긋났고, 두 줄짜리 안내 문구의 아랫줄이 잘려 안 읽혔다.
+
+    글꼴이 하나도 없는 환경(오프스크린 시험 등)도 정상으로 본다 — 그때는
+    이름을 적지 않고 시스템 기본에 맡긴다.
+    """
     from PySide6.QtGui import QFontDatabase
 
+    installed = set(QFontDatabase.families())
     name = theme.font_family()
-    assert name, "설치된 후보 글꼴이 하나도 없다"
-    assert name in set(QFontDatabase.families())
-    assert name in theme.stylesheet("medium")
+    if not installed:
+        assert name == ""
+        assert "sans-serif" in theme.stylesheet("medium")
+        return
+    assert name in installed
+    assert f'"{name}"' in theme.stylesheet("medium")
+
+
+def test_asking_for_a_font_before_the_app_exists_does_not_crash(monkeypatch):
+    """QFontDatabase를 앱 없이 건드리면 Qt가 예외가 아니라 프로세스를 죽인다.
+
+    그리고 그때 얻은 빈 값을 캐시해 두면, 앱이 선 뒤에도 계속 빈 값이 나와
+    글꼴이 영영 안 맞는다.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    monkeypatch.setattr(theme, "_family", None)
+    monkeypatch.setattr(QGuiApplication, "instance", staticmethod(lambda: None))
+
+    assert theme.font_family() == ""
+    assert theme._family is None, "못 찾은 답을 캐시하면 안 된다"
 
 
 def test_every_screen_separates_controls_from_results(make_window, db, qapp):
