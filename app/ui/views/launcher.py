@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -273,27 +274,29 @@ class _ProjectRow(QFrame):
         )
         bottom.addStretch(1)
 
-        rename = QPushButton("이름 바꾸기")
-        rename.setObjectName("Quiet")
-        rename.clicked.connect(lambda: on_rename(entry))
-        bottom.addWidget(rename)
-
-        forget = QPushButton("목록에서 빼기")
-        forget.setObjectName("Quiet")
+        # 손대는 것 셋은 ⋯ 안에 넣는다. 확인 대화상자가 막아 주기는 하지만,
+        # **'완전 삭제'가 '열기' 바로 옆에 서 있는 것 자체가 위험**하다 —
+        # 목록에서 프로젝트를 여는 동작은 빠르게 반복되고, 그 속도로 누르는
+        # 손은 한 칸 옆을 짚는다. 되돌릴 수 없는 것은 한 번 더 열게 한다.
+        more = QPushButton("⋯")
+        more.setObjectName("IconButton")
+        more.setFixedWidth(26)
+        more.setToolTip("이름 바꾸기 · 목록에서 빼기 · 완전 삭제")
+        menu = QMenu(more)          # 메뉴의 부모는 언제나 그 메뉴를 여는 버튼이다
+        menu.addAction("이름 바꾸기", lambda: on_rename(entry))
+        forget = menu.addAction("목록에서 빼기", lambda: on_forget(entry))
         forget.setToolTip("분석 결과는 지우지 않습니다")
-        forget.clicked.connect(lambda: on_forget(entry))
-        bottom.addWidget(forget)
-
+        menu.addSeparator()
         # 빼기와 지우기를 같은 무게로 두지 않는다. 하나는 되돌릴 수 있고
-        # 하나는 아니다 — 색과 이름이 그 차이를 먼저 말해야 한다.
-        delete = QPushButton("완전 삭제")
-        delete.setObjectName("Destructive")
+        # 하나는 아니다 — 이름이 그 차이를 먼저 말해야 한다.
+        delete = menu.addAction("완전 삭제", lambda: on_delete(entry))
         delete.setToolTip("분석 결과를 지웁니다. 원본 자료는 건드리지 않습니다.")
         delete.setEnabled(not is_current)
         if is_current:
             delete.setToolTip("지금 열려 있는 인수인계는 지울 수 없습니다")
-        delete.clicked.connect(lambda: on_delete(entry))
-        bottom.addWidget(delete)
+        more.setMenu(menu)
+        self.menu = menu            # 시험이 메뉴 항목을 찾을 수 있게 남긴다
+        bottom.addWidget(more)
 
         open_button = QPushButton("열기")
         open_button.setObjectName("Primary")
