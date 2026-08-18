@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from ..core import handover
 from ..db import Database
 from ..jobs import PipelineRunner
-from . import icons, theme
+from . import icons, stages, theme
 from .views.ask import AskView
 from .views.calendar import CalendarView
 from .views.documents import DocumentsView
@@ -375,10 +375,12 @@ class MainWindow(QMainWindow):
         self._start_pipeline()
 
     def _on_progress(self, stage: str, done: int, total: int, note: str) -> None:
+        # 상시 화면에는 일감 이름이 아니라 지금 무엇이 일어나는지를 적는다
+        # (계획서 §24). 기술 이름은 상태 상세에만 둔다.
         if total:
-            self.topbar.show_progress(done, total, stage)
+            self.topbar.show_progress(done, total, stages.running(stage))
         else:
-            self.topbar.show_idle(f"{stage} · {done:,}건")
+            self.topbar.show_idle(f"{stages.running(stage)} · {done:,}건")
 
     def _on_pipeline_finished(self) -> None:
         self._tick.stop()

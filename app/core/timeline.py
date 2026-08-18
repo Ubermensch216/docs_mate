@@ -262,16 +262,28 @@ def reconstruct_steps(
     return steps
 
 
-def default_how_year(years: list[int], today: date | None = None) -> int | None:
+def default_how_year(
+    years: list[int],
+    today: date | None = None,
+    confirmed: list[int] | None = None,
+) -> int | None:
     """처리 순서를 보여줄 기본 연도. 완결된 최근 연도를 우선한다.
 
     올해는 아직 진행 중이라 처리 순서가 끝까지 안 보일 수 있다. 완결된
     연도가 있으면 그걸 먼저 보여주고, 없으면(자료가 올해뿐이면) 올해라도
     보여준다 — 아무것도 안 보여주는 것보다는 낫다.
+
+    **사람이 확정한 해가 있으면 그 해가 이긴다**(계획서 §21). "올해는 이렇게
+    처리했다"고 손수 확정해 두고 다음에 열었을 때 작년 흐름이 떠 있으면,
+    그 확정은 아무 데도 쓰이지 않은 것이 된다. 진행 중인 해라도 마찬가지다 —
+    사람이 그렇다고 말한 것이 자료에서 추정한 것보다 앞선다.
     """
     if not years:
         return None
     today = today or date.today()
+    settled = [y for y in (confirmed or []) if y in years]
+    if settled:
+        return max(settled)
     past = [y for y in years if y < today.year]
     return max(past) if past else max(years)
 

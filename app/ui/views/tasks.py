@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -40,9 +41,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import compare, guide, handover, health, status, timeline
+from ...core import compare, guide, handover, health, report, status, timeline
 from ...db import Database
-from .. import theme
+from .. import stages, theme
 from ..widgets import (
     Badge,
     Card,
@@ -76,11 +77,13 @@ from .cycle_format import (
     upcoming,
 )
 
+# (파이프라인 단계 이름, 센 수, 분모). 이름은 `jobs/pipeline.py`의 단계와
+# 같아야 한다 — 화면 문구는 ui/stages.py가 붙인다(계획서 §24).
 STAGES = [
     ("파일 찾기", "total", None),
     ("내용 읽기", "parsed", "documents"),
     ("의미 색인", "embedded", "documents"),
-    ("업무 파악하기", "in_task", "documents"),
+    ("업무 파악", "in_task", "documents"),
 ]
 
 # 상세 화면의 네 질문. 라벨은 개념 이름이 아니라 사용자가 실제로 품는 질문이다.
@@ -263,6 +266,16 @@ class TasksView(QWidget):
         if done < len(tasks):
             marks.addWidget(Badge(f"◐ 확인 필요 {len(tasks) - done}", "attention"))
         marks.addStretch(1)
+        # 인수인계는 화면 안에서 끝나지 않는다 — 후임자가 이 프로그램을 쓰지
+        # 않을 수도 있고, 결재로 올려야 할 수도 있다.
+        export = QPushButton("보고서 만들기")
+        export.setObjectName("Quiet")
+        export.setCursor(Qt.CursorShape.PointingHandCursor)
+        export.setToolTip(
+            "확인한 업무지식을 글 하나로 내보냅니다. 원본 파일은 건드리지 않습니다."
+        )
+        export.clicked.connect(self._export_report)
+        marks.addWidget(export)
         self.head.addLayout(marks)
 
         self._render_start_here(tasks, progress, tally)
@@ -275,6 +288,59 @@ class TasksView(QWidget):
 
         self._render_health()
         self._render_leftovers(counts)
+
+    def _export_report(self) -> None:
+        """보고서 내보내기 (계획서 §33, PRD §10.9).
+
+        경로 묻기와 실제 쓰기를 나눈다 — 네이티브 파일 다이얼로그는 시험에서
+        가로채기 어렵고, 쓰기만 따로 두면 다이얼로그 없이 검증할 수 있다
+        (설정 화면의 감사 로그 내보내기와 같은 이유).
+
+        내보내기 전에 **아직 확인되지 않은 것을 먼저 말한다**(RPT-004). 이
+        문서는 다음 담당자에게 그대로 넘어간다. 무엇이 사람 손을 안 거쳤는지
+        모른 채 넘기면, 추정이 사실로 굳는 자리가 바로 여기다.
+        """
+        progress = handover.summarize(self.db.handover_counts())
+        if not progress.done:
+            pending = [
+                f"· {area.sentence()}" for area in progress.measured
+                if area.state != status.CONFIRMED
+            ]
+            answer = QMessageBox.question(
+                self,
+                "아직 확인하지 않은 것이 있습니다",
+                "확인하지 않은 대목은 보고서에 ◐·△로 표시되어 나갑니다.\n\n"
+                + "\n".join(pending)
+                + "\n\n그대로 만들까요?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        today = date.today()
+        suggested = (
+            f"{self.db.path.parent.name}_인수인계_보고서_{today:%Y%m%d}.md"
+        )
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "인수인계 보고서 저장", suggested, "Markdown (*.md)"
+        )
+        if not path:
+            return
+        self._write_report(path)
+        QMessageBox.information(
+            self, "보고서를 만들었습니다",
+            path + "\n\n글 파일이라 어디서나 열립니다. 고쳐서 쓰셔도 됩니다.",
+        )
+
+    def _write_report(self, path: str) -> int:
+        text = report.build(self.db, project=self.db.path.parent.name)
+        # BOM을 붙인다. 한글 Windows의 메모장·엑셀이 UTF-8을 자동으로 알아보지
+        # 못해 한글이 깨지는 일이 실제로 잦다(감사 로그 내보내기와 같은 판단).
+        with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+            handle.write(text)
+        self.db.audit("report.export", path)
+        return len(text)
 
     def _render_health(self) -> None:
         """업무기억 건강도 (계획서 §19).
@@ -591,7 +657,7 @@ class TasksView(QWidget):
         self.column.addWidget(
             EmptyState(
                 "업무는 아직 파악하지 못했습니다",
-                "내용을 읽고 의미 색인을 만들어야 업무를 나눌 수 있습니다. "
+                "문서를 읽고 서로 견줄 준비가 되어야 업무를 나눌 수 있습니다. "
                 "그동안 먼저 찾은 파일부터 [문서]에서 볼 수 있습니다.",
                 "문서 보기",
                 self.go_documents.emit,
@@ -909,12 +975,21 @@ class TasksView(QWidget):
         재구성이므로 "~로 보입니다" 톤을 유지한다. 모든 단계는 문서에
         앵커링되고, 근거 없는 공백은 지어내지 않고 그렇다고 밝힌다.
         """
-        years = self.db.task_years(task_id)
-        if not years:
+        found = self.db.task_years(task_id)
+        if not found:
             column.addWidget(UnknownBlock("처리 순서를 재구성할 자료가 없습니다."))
             return
 
-        default_year = timeline.default_how_year(years)
+        # 올해는 자료가 아직 없어도 목록에 세운다 (계획서 §21). 올해 칸이
+        # 없으면 "지난해 흐름을 올해로 가져오기"를 시작할 자리가 없다 —
+        # 과거에서 복원해 놓고 사람이 수행한 결과를 다시 담을 데가 없는 셈.
+        this_year = date.today().year
+        years = sorted(set(found) | {this_year})
+        confirmed = self.db.confirmed_step_years(task_id)
+
+        # 확정된 해를 찾을 때 자료가 있는 해(found)만 넘기면, 문서 없이
+        # 사람이 채운 올해 흐름은 후보에서 빠져 확정이 무시된다.
+        default_year = timeline.default_how_year(years, confirmed=confirmed)
         selected = self._how_year.get(task_id, default_year)
         if selected not in years:
             selected = default_year
@@ -939,7 +1014,10 @@ class TasksView(QWidget):
         ordered_years = sorted(years, reverse=True)
         combo = QComboBox()
         for y in ordered_years:
-            combo.addItem(f"{y}년으로 보기", y)
+            # 아직 자료가 없는 올해는 그렇다고 적는다. 빈 화면을 보고
+            # "분석이 덜 됐나" 싶게 두지 않는다.
+            mark = "" if y in found else " (자료 없음)"
+            combo.addItem(f"{y}년으로 보기{mark}", y)
         combo.setCurrentIndex(ordered_years.index(selected))
         combo.currentIndexChanged.connect(
             lambda _index, t=task_id, c=combo: self._change_how_year(t, c.currentData())
@@ -948,7 +1026,7 @@ class TasksView(QWidget):
 
         # 비교는 **끄고 시작한다**. 두 해를 늘 나란히 보이면 한 해의 순서를
         # 읽으려는 사람에게 매번 두 배의 화면을 읽히게 된다.
-        others = [y for y in ordered_years if y != selected]
+        others = [y for y in ordered_years if y != selected and y in found]
         against = self._how_against.get(task_id)
         if against not in others:
             against = None
@@ -974,12 +1052,19 @@ class TasksView(QWidget):
             column.addWidget(
                 UnknownBlock(f"{selected}년에는 처리 순서를 재구성할 자료가 없습니다.")
             )
+            self._render_carry(column, task_id, selected, found)
             add = QPushButton("＋ 단계 직접 추가")
             add.setObjectName("Link")
             add.setCursor(Qt.CursorShape.PointingHandCursor)
             add.clicked.connect(lambda: self._add_step(task_id, selected, 0))
             column.addWidget(add, alignment=Qt.AlignmentFlag.AlignLeft)
             return
+
+        # 문서가 하나도 안 달린 해는 자료에서 읽은 것이 아니다. 가져오거나
+        # 손으로 적은 순서에 "자료에서 이렇게 보입니다"라고 하면, 이 제품이
+        # 가장 조심해 온 것(근거 없는 말)을 스스로 하는 셈이다.
+        if not any(s["doc_id"] for s in steps):
+            lead.setText(f"{selected}년 순서는 자료가 아니라 사람이 적어 둔 것입니다")
 
         if any(s["decided_by"] == "user" for s in steps):
             column.addWidget(
@@ -989,6 +1074,10 @@ class TasksView(QWidget):
                     small=True,
                 )
             )
+        else:
+            # AI가 재구성한 순서가 맞았을 때 사용자가 할 일이 '아무것도 안 하기'면
+            # 그 업무는 영원히 '자료에서 추정'으로 남는다 (계획서 §21).
+            column.addWidget(self._confirm_flow_row(task_id, selected, len(steps)))
 
         last = len(steps)
         for position, step in enumerate(steps, start=1):
@@ -1153,6 +1242,87 @@ class TasksView(QWidget):
             )
         cell.setFixedWidth(_COMPARE_COL_W)
         return cell
+
+    def _confirm_flow_row(self, task_id: int, year: int, count: int) -> QWidget:
+        """'이 순서가 맞다'를 한 번에 인정하는 자리 (계획서 §21).
+
+        올해면 말이 달라진다 — 지난해 것은 자료를 보고 '맞다'고 인정하는
+        일이지만, 올해 것은 **본인이 실제로 그렇게 처리한 결과**다. 같은
+        버튼에 같은 말을 쓰면 뒤의 뜻이 사라진다.
+        """
+        panel = SubPanel()
+        row = QHBoxLayout()
+        row.setSpacing(theme.SP_SM)
+        mine = year == date.today().year
+        row.addWidget(
+            muted_label(
+                f"올해 실제로 이 순서로 처리했다면 그렇게 남겨 두세요. "
+                f"다음 담당자가 보는 것은 이 기록입니다."
+                if mine else
+                f"{year}년 순서가 자료와 맞으면 확인해 두세요. "
+                f"다시 분석해도 바뀌지 않습니다.",
+                small=True,
+            ),
+            1,
+        )
+        button = QPushButton(
+            "올해 처리 결과로 반영" if mine else f"{year}년 순서 확인함"
+        )
+        button.setObjectName("Primary")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip(f"{count}개 단계를 담당자 확인으로 남깁니다")
+        button.clicked.connect(lambda: self._confirm_flow(task_id, year))
+        row.addWidget(button)
+        panel.body.addLayout(row)
+        return panel
+
+    def _confirm_flow(self, task_id: int, year: int) -> None:
+        self.db.confirm_task_steps(task_id, year)
+        self.state_changed.emit()
+        self.refresh()
+
+    def _render_carry(
+        self, column: QVBoxLayout, task_id: int, year: int, found: list[int]
+    ) -> None:
+        """지난해 흐름을 올해로 가져오기 (계획서 §21).
+
+        **과거 기록에서 복원 → 사람이 수행 → 다시 업무기억으로 축적**의 첫
+        칸이다. 올해는 아직 자료가 없어 재구성할 것이 없지만, 후임자가 올해
+        할 일은 작년과 크게 다르지 않다.
+
+        가져온 단계는 근거 없는 칸으로 들어간다 — 올해 문서에서 읽은 것이
+        아니라 작년 것을 옮긴 것이므로 화면이 계속 그렇게 말해야 한다.
+        """
+        earlier = [y for y in found if y < year]
+        if not earlier:
+            return
+        source = max(earlier)
+
+        panel = SubPanel()
+        row = QHBoxLayout()
+        row.setSpacing(theme.SP_SM)
+        row.addWidget(
+            muted_label(
+                f"{source}년 순서를 {year}년 뼈대로 가져올 수 있습니다. "
+                f"실제로 하면서 고치면 그것이 {year}년 기록이 됩니다.",
+                small=True,
+            ),
+            1,
+        )
+        button = QPushButton(f"{source}년 흐름 가져오기")
+        button.setObjectName("Quiet")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setToolTip("근거 문서 없이 이름과 시점만 옮깁니다")
+        button.clicked.connect(lambda: self._carry_flow(task_id, source, year))
+        row.addWidget(button)
+        panel.body.addLayout(row)
+        column.addWidget(panel)
+
+    def _carry_flow(self, task_id: int, source: int, target: int) -> None:
+        self.db.carry_steps_forward(task_id, source, target)
+        self._how_year[task_id] = target
+        self.state_changed.emit()
+        self.refresh()
 
     def _step_menu(self, task_id: int, year: int, step, owner: QWidget) -> QMenu:
         """메뉴의 부모는 항상 그 메뉴를 여는 버튼이다 (아래 '교정' 절 참고)."""
@@ -1518,16 +1688,15 @@ class SplitDialog(QDialog):
         return picked, dialog.name.text().strip()
 
 
-def _stage_line(label: str, done: int, limit: int, total_key: str | None) -> str:
-    if total_key is None:
-        return f"✓ {label}   {done:,}건 완료"
-    if limit == 0:
-        return f"○ {label}   대기 중"
-    if done >= limit:
-        return f"✓ {label}   {done:,}건 완료"
-    if done == 0:
-        return f"○ {label}   대기 중"
-    return f"⣾ {label}   {done:,} / {limit:,}"
+def _stage_line(stage: str, done: int, limit: int, total_key: str | None) -> str:
+    """'문서를 읽는 중  120 / 800'. 단계 이름이 아니라 지금 무엇이 되고
+    있는지를 적는다 (계획서 §24). 끝난 단계는 무엇을 얻었는지로 적는다 —
+    사용자가 알고 싶은 것은 단계가 지나갔다는 사실이 아니라 결과다."""
+    if total_key is None or (limit > 0 and done >= limit):
+        return f"✓ {stages.done(stage)} ({done:,}건)"
+    if limit == 0 or done == 0:
+        return f"○ {stages.running(stage)} — 아직 시작하지 않았습니다"
+    return f"⣾ {stages.running(stage)}   {done:,} / {limit:,}"
 
 
 def _stage_done(done: int, limit: int, total_key: str | None) -> bool:

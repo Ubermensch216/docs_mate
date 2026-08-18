@@ -1322,6 +1322,72 @@ class Database:
             (task_id, year),
         )
 
+    def confirmed_step_years(self, task_id: int) -> list[int]:
+        """사람이 확정한 처리 흐름의 연도. 최신이 앞이다."""
+        rows = self.con.execute(
+            "SELECT DISTINCT year FROM task_steps "
+            "WHERE task_id = ? AND decided_by = 'user' ORDER BY year DESC",
+            (task_id,),
+        ).fetchall()
+        return [row["year"] for row in rows]
+
+    def confirm_task_steps(self, task_id: int, year: int) -> int:
+        """'올해는 이렇게 처리했다' — 그 해 흐름 전체를 사람 것으로 확정한다
+        (계획서 §21).
+
+        단계를 하나씩 고쳐야만 확정되던 자리에 **한 번의 인정**을 놓는다.
+        AI가 재구성한 순서가 맞았을 때 사용자가 할 일이 '아무것도 안 하기'면,
+        그 업무는 영원히 '자료에서 추정' 상태로 남는다.
+        """
+        steps = self.con.execute(
+            "SELECT COUNT(*) AS n FROM task_steps WHERE task_id = ? AND year = ?",
+            (task_id, year),
+        ).fetchone()["n"]
+        if not steps:
+            return 0
+        self._claim_steps(task_id, year)
+        self._record("task_steps", task_id, "decided_by", "ai", "user", scope="year")
+        self.audit("step.confirm_year", str(task_id), str(year))
+        return steps
+
+    def carry_steps_forward(self, task_id: int, source: int, target: int) -> int:
+        """지난해 흐름을 올해 자리로 옮겨 온다 (계획서 §21).
+
+        **과거에서 복원 → 사람이 수행 → 다시 업무기억으로 축적**의 첫 칸이다.
+        올해는 아직 자료가 없어 재구성할 것이 없지만, 후임자가 올해 할 일은
+        작년과 크게 다르지 않다. 지난해 순서를 올해의 뼈대로 삼고 실제로
+        하면서 고치게 한다.
+
+        가져온 단계는 **근거 없는 칸(is_inferred)**이다 — 올해 문서에서 읽은
+        것이 아니라 작년 것을 옮겨 온 것이므로, 화면에서 계속 그렇게 보여야
+        한다. 원본 문서를 올해 단계의 근거로 달지 않는 이유도 같다.
+
+        이미 올해 단계가 있으면 아무것도 하지 않는다. 덮어쓰면 사용자가
+        올해 쌓은 것을 지우게 된다.
+        """
+        if self.con.execute(
+            "SELECT 1 FROM task_steps WHERE task_id = ? AND year = ?", (task_id, target)
+        ).fetchone():
+            return 0
+        rows = self.con.execute(
+            "SELECT ordinal, label, month, day_hint FROM task_steps "
+            "WHERE task_id = ? AND year = ? ORDER BY ordinal",
+            (task_id, source),
+        ).fetchall()
+        for row in rows:
+            self.con.execute(
+                "INSERT INTO task_steps(task_id, year, ordinal, label, month, "
+                "day_hint, doc_id, is_inferred, decided_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, 1, 'user')",
+                (task_id, target, row["ordinal"], row["label"], row["month"],
+                 row["day_hint"]),
+            )
+        if rows:
+            self._record("task_steps", task_id, "carried_from", source, target,
+                         scope="year")
+            self.audit("step.carry", str(task_id), f"{source}->{target}")
+        return len(rows)
+
     def edit_step_label(self, step_id: int, label: str) -> None:
         row = self.con.execute(
             "SELECT task_id, year, label FROM task_steps WHERE id = ?", (step_id,)

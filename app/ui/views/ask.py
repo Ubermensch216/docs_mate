@@ -388,7 +388,7 @@ class AskView(QWidget):
         if counts["chunks_embedded"] == 0:
             return False, (
                 "질문에 답할 준비가 끝나지 않았습니다. 근거 없이 답하지 않기 위해 "
-                "자료를 다 읽고 의미 색인을 만들 때까지 기다립니다."
+                "자료를 다 읽고 서로 견줄 준비가 될 때까지 기다립니다."
             )
 
         left = self.db.unembedded_chunk_count()
@@ -396,7 +396,8 @@ class AskView(QWidget):
             missing = self.db.documents_missing_from_search()
             done = counts["chunks_embedded"]
             text = (
-                f"질문 준비 {done:,} / {done + left:,} — 아직 {left:,}조각을 읽는 중입니다. "
+                f"질문에 답할 준비를 하는 중 {done:,} / {done + left:,} — "
+                f"아직 {left:,}조각을 읽고 있습니다. "
                 f"지금 답할 수는 있지만 일부 자료는 근거에 포함되지 않습니다."
             )
             if missing:
@@ -416,7 +417,7 @@ class AskView(QWidget):
             self.answer_column.addWidget(
                 EmptyState(
                     "아직 답할 준비가 되지 않았습니다",
-                    "문서 내용을 읽고 의미 색인을 만든 뒤에 질문에 답할 수 있습니다. "
+                    "문서를 읽고 서로 견줄 준비가 된 뒤에 질문에 답할 수 있습니다. "
                     "그때까지는 [문서]에서 직접 찾아볼 수 있습니다.",
                     "문서 보기",
                     self.go_documents.emit,

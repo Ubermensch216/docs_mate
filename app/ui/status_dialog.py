@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import theme
+from . import stages, theme
 from .widgets import Card, UnknownBlock, clear_layout, muted_label, section_title
 
 STAGE_ORDER = [
@@ -101,12 +101,20 @@ class StatusDialog(QDialog):
 
 
 def _stage_line(name: str, report) -> str:
+    """상세 화면에서만 기술 이름을 함께 적는다 (계획서 §24).
+
+    문제가 났을 때 무엇을 뒤져야 하는지는 결국 기술 이름으로 물어야 한다.
+    다만 그 이름이 필요한 자리는 여기 하나뿐이다.
+    """
+    label = stages.technical(name)
     if report is None:
-        return f"○ {name}   대기 중"
+        return f"○ {label}   아직 시작하지 않았습니다"
     if report.total <= 0:
-        return f"· {name}   {report.note or '해당 없음'}"
-    mark = "✓" if report.done >= report.total else "⣾"
-    text = f"{mark} {name}   {report.done:,} / {report.total:,}"
+        return f"· {label}   {report.note or '해당 없음'}"
+    if report.done >= report.total:
+        text = f"✓ {label}   {stages.done(name)} ({report.total:,}건)"
+    else:
+        text = f"⣾ {label}   {stages.running(name)} · {report.done:,} / {report.total:,}"
     if report.note:
         text += f"   · {report.note}"
     return text
