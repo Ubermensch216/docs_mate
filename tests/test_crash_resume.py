@@ -45,11 +45,20 @@ def test_force_killed_scan_leaves_a_valid_database_and_resumes(tmp_path: Path, m
     # 결정적으로 만들려고 연결 불가 주소로 고정한다(다른 파이프라인 시험과
     # 같은 패턴).
     script.write_text(
-        "import sys; sys.path.insert(0, r'" + str(REPO_ROOT) + "')\n"
+        "import sys, time; sys.path.insert(0, r'" + str(REPO_ROOT) + "')\n"
         "from app.db import Database\n"
         "from app.ai.client import OllamaClient\n"
         "import app.jobs.pipeline as pipeline_module\n"
         "pipeline_module.OllamaClient = lambda *a, **k: OllamaClient(base_url='http://127.0.0.1:1')\n"
+        # 문서마다 잠깐 쉬게 해서 **자식이 부모보다 먼저 끝나는 일을 없앤다.**
+        # 이 시험은 '스캔 도중 강제 종료'를 확인하는 것이라 자식이 살아 있는
+        # 동안 죽여야 하는데, 표본이 작아 부하가 걸린 기계에서는 부모가 다음
+        # 폴링을 하기 전에 자식이 파이프라인을 다 끝내 버렸다(실제로 전체
+        # 시험을 돌릴 때 간헐 실패했다). 파일을 늘려 시간을 버는 방법도 있지만
+        # 그러면 재개 단계까지 함께 느려진다. 자식은 첫 문서가 들어온 직후
+        # 죽으므로 이 지연이 시험 시간에 더해지지는 않는다.
+        "_parse = pipeline_module.parse\n"
+        "pipeline_module.parse = lambda *a, **k: (time.sleep(0.05), _parse(*a, **k))[1]\n"
         "from app.jobs.pipeline import Pipeline\n"
         "from PySide6.QtCore import QCoreApplication\n"
         "QCoreApplication([])\n"
