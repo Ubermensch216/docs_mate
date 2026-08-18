@@ -1481,3 +1481,28 @@ def test_settings_preview_matches_the_size_actually_applied():
 def test_larger_sizes_still_grow():
     """하한을 넣었다고 '크게'가 안 커지면 접근성 설정이 무의미해진다."""
     assert theme.body_px("large") > theme.body_px("medium") > theme.body_px("small")
+
+
+def test_empty_state_text_fits_a_narrow_pane(qapp):
+    """질문 화면 답변 칸(최소 380)처럼 좁은 자리에서 설명문이 칸 밖으로
+    삐져나가면, 가로 스크롤이 꺼져 있어 사용자에게는 문장이 그냥 끊긴 것으로
+    보인다(실측으로 잡았다)."""
+    from app.ui.widgets import EmptyState
+    from app.ui.widgets.common import DETAIL_WIDTH
+
+    state = EmptyState(
+        "무엇이든 물어보세요",
+        "등록한 자료에서 찾아 답합니다. 답에는 문장마다 근거가 붙고, "
+        "그 근거의 원문을 오른쪽에서 바로 확인할 수 있습니다.",
+    )
+    try:
+        state.resize(360, 400)
+        state.layout().activate()
+        assert state.minimumSizeHint().width() <= 360, "판이 칸보다 넓은 최소 폭을 요구한다"
+        assert state._detail.width() <= 360
+
+        state.resize(900, 400)          # 넓어지면 읽기 좋은 폭까지만 늘어난다
+        state.layout().activate()
+        assert state._detail.width() == DETAIL_WIDTH
+    finally:
+        state.setParent(None)

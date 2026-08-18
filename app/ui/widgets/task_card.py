@@ -49,6 +49,20 @@ def color_for(name: str) -> str:
     return TASK_COLORS[sum(ord(c) for c in name) % len(TASK_COLORS)]
 
 
+def month_legend() -> str:
+    """카드 아래 열두 칸이 무엇인지 말한다.
+
+    일정 화면의 격자에는 범례가 붙어 있는데(timeline_grid.legend_text) 업무
+    카드의 월 스트립에는 없었다. 같은 뜻의 그림이 한 화면에서는 설명되고
+    다른 화면에서는 설명되지 않으면, 사용자는 두 그림이 다른 것이라고
+    생각하거나 둘 다 안 믿는다.
+
+    범례는 판마다 붙이지 않고 카드 묶음 아래 한 줄만 둔다 — 카드가 여덟
+    장이면 같은 설명이 여덟 번 붙는다.
+    """
+    return "카드 아래 열두 칸은 1월부터 12월까지입니다   ■ 이 업무를 하는 달   □ 아닌 달"
+
+
 class MonthStrip(QWidget):
     """12개월을 한 줄로 압축해 '언제 하는 일인가'를 즉시 보여준다.
 

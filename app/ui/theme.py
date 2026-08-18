@@ -551,6 +551,14 @@ def stylesheet(text_size: str = "medium") -> str:
         border-radius: {RADIUS}px;
     }}
     QWidget#PaneBody {{ background: transparent; }}
+    /* 답변 칸의 스크롤 영역. 기본 뷰포트는 흰색이라, 답이 짧으면 카드
+       아래로 흰 판이 화면 끝까지 이어져 '내용이 더 있는데 비어 있다'처럼
+       보였다. 바탕을 비워 회색 캔버스가 드러나게 한다 — 카드가 어디서
+       끝나는지가 보여야 한다. */
+    QScrollArea#AnswerPane,
+    QScrollArea#AnswerPane > QWidget#qt_scrollarea_viewport {{
+        background: transparent;
+    }}
     /* 문서 화면 오른쪽 상세. 표와 나란히 서는 흰 판이라 같은 테두리를 쓴다. */
     QScrollArea#DetailPane {{
         background: {BG};

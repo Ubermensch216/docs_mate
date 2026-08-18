@@ -173,3 +173,35 @@ def test_grid_clear_removes_every_card(qapp):
 def test_grid_places_all_cards(qapp):
     grid = _grid_with(qapp, 7, 1200)
     assert grid._grid.count() == 7
+
+
+# ── 월 스트립 범례 ──────────────────────────────────────────────────
+
+def test_the_month_strip_has_a_legend_like_the_calendar_grid(qapp):
+    """같은 뜻의 그림이 한 화면에서는 설명되고 다른 화면에서는 설명되지
+    않으면, 사용자는 두 그림이 다른 것이라고 생각하거나 둘 다 안 믿는다."""
+    from app.ui.widgets import month_legend
+
+    legend = month_legend()
+    assert "1월부터 12월까지" in legend
+    # 색만으로 뜻을 전하지 않는다(PRD §18.4) — 기호와 글자가 함께 있어야 한다.
+    assert "■" in legend and "하는 달" in legend
+
+
+def test_the_task_home_shows_the_month_legend_once(qapp, tmp_path):
+    """카드가 여덟 장이면 같은 설명이 여덟 번 붙어서는 안 된다."""
+    from app.db import Database
+    from app.ui.views.tasks import TasksView
+    from app.ui.widgets import month_legend
+
+    db = Database(tmp_path / "project.db")
+    db.init()
+    db.con.execute("INSERT INTO tasks(id, name) VALUES (1, '행정사무감사')")
+    db.con.execute("INSERT INTO tasks(id, name) VALUES (2, '예산관리')")
+    view = TasksView(db)
+    try:
+        shown = [w.text() for w in view.findChildren(QLabel) if w.text() == month_legend()]
+        assert len(shown) == 1
+    finally:
+        view.setParent(None)
+        db.close()

@@ -61,6 +61,7 @@ from ..widgets import (
     clear_layout,
     hint_row,
     legend_text,
+    month_legend,
     muted_label,
     open_original,
     section_title,
@@ -246,8 +247,7 @@ class TasksView(QWidget):
                 f"전임자 자료 {counts['documents']:,}건을 살펴본 결과입니다. "
                 "AI가 제안한 것이므로 확인하고 고칠 수 있습니다.<br><br>"
                 "카드를 누르면 그 업무를 자세히 봅니다. 왼쪽 띠 색은 업무를 "
-                "구분하는 표시이고, 아래 열두 칸은 1월부터 12월까지 그 업무를 "
-                "하는 달입니다."
+                "구분하는 표시입니다."
             ),
             0,
             Qt.AlignmentFlag.AlignVCenter,
@@ -285,6 +285,9 @@ class TasksView(QWidget):
         for row in tasks:
             grid.add_card(self._task_card(row))
         self.column.addWidget(grid)
+        # 월 스트립 범례. 일정 화면 격자에는 있고 여기에는 없어서, 같은 뜻의
+        # 그림이 한쪽에서만 설명되고 있었다.
+        self.column.addWidget(muted_label(month_legend(), small=True))
 
         self._render_health()
         self._render_leftovers(counts)

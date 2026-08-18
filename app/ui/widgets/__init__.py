@@ -31,7 +31,7 @@ from .common import (
 )
 from .evidence_drawer import Evidence, EvidenceDrawer
 from .flow_grid import FlowGrid
-from .task_card import MonthStrip, TaskCard, color_for
+from .task_card import MonthStrip, TaskCard, color_for, month_legend
 from .timeline_grid import TimelineGrid, legend_text
 
 __all__ = [
@@ -61,6 +61,7 @@ __all__ = [
     "divider",
     "hint_row",
     "legend_text",
+    "month_legend",
     "muted_label",
     "note_label",
     "open_original",

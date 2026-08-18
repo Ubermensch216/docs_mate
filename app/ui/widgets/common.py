@@ -659,27 +659,34 @@ class EmptyState(QWidget):
         column = QVBoxLayout(self)
         column.setContentsMargins(0, theme.SP_XL * 2, 0, 0)
         column.setSpacing(theme.SP_MD)
-        column.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        # 세로 정렬만 건다. AlignHCenter를 레이아웃에 걸면 자식이 제 sizeHint
+        # 폭만 차지해서, 설명문이 칸이 넓어져도 좁은 기둥으로 접힌다. 가운데
+        # 맞춤은 위젯 각자가 한다.
+        column.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         heading = QLabel(title)
         heading.setObjectName("SectionTitle")
         heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         column.addWidget(heading)
 
+        self._detail: QLabel | None = None
         if detail:
-            text = QLabel(detail)
+            # 폭을 setFixedWidth로 못 박으면 그 값이 곧 이 판의 최소 폭이 되어,
+            # 질문 화면 답변 칸(최소 380)처럼 좁은 자리에서 글이 칸 밖으로
+            # 삐져나간다 — 가로 스크롤이 꺼져 있어 사용자에게는 문장이 그냥
+            # 끊긴 것으로 보인다(실측으로 잡았다). 상한만 두고 접히는 높이는
+            # WrapLabel에 맡긴다.
+            text = WrapLabel(detail)
             text.setObjectName("Muted")
             text.setWordWrap(True)
             text.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-            # 폭을 고정한 뒤 높이를 직접 계산해 넣는다. word wrap 라벨의 sizeHint는
-            # 부모 레이아웃이 heightForWidth를 물어보지 않으면 한 줄 높이로 잡혀
-            # 둘째 줄부터 잘린다.
-            text.setFixedWidth(DETAIL_WIDTH)
-            text.setMinimumHeight(text.heightForWidth(DETAIL_WIDTH))
+            text.setMaximumWidth(DETAIL_WIDTH)
             column.addWidget(text)
+            self._detail = text
 
         if action and on_action:
             button = QPushButton(action)
             button.setObjectName("Primary")
             button.clicked.connect(on_action)
             column.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
