@@ -181,10 +181,21 @@ def test_the_open_project_cannot_be_deleted(make_dialog, tmp_path: Path):
     dialog = make_dialog(tmp_path, current=entry.path)
     row = _rows(dialog)[0]
 
-    delete = next(
-        b for b in row.findChildren(launcher_view.QPushButton) if b.text() == "완전 삭제"
-    )
+    delete = next(a for a in row.menu.actions() if a.text() == "완전 삭제")
     assert not delete.isEnabled()
+
+
+def test_destructive_actions_do_not_sit_next_to_open(make_dialog, tmp_path: Path):
+    """목록에서 프로젝트를 여는 동작은 빠르게 반복되고, 그 속도로 누르는 손은
+    한 칸 옆을 짚는다. 되돌릴 수 없는 것은 한 번 더 열게 한다."""
+    registry.create_project("총무팀 인수인계", tmp_path)
+    row = _rows(make_dialog(tmp_path))[0]
+
+    buttons = [b.text() for b in row.findChildren(launcher_view.QPushButton)]
+    assert buttons == ["⋯", "열기"]
+    assert [a.text() for a in row.menu.actions() if a.text()] == [
+        "이름 바꾸기", "목록에서 빼기", "완전 삭제"
+    ]
 
 
 def test_window_asks_to_switch_when_the_project_button_is_pressed(qapp, tmp_path: Path,
