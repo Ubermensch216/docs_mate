@@ -229,6 +229,7 @@ def test_start_here_disappears_when_everything_is_checked(db: Database, qapp, mo
     db.mark_reading(1)
     db.mark_reading(2)
     db.con.execute("UPDATE task_cycles SET decided_by = 'user'")
+    db.edit_step_label(1, "요구자료 접수 확인")   # 첫 주 항목까지 마쳐야 판이 사라진다
 
     view = TasksView(db)
     try:

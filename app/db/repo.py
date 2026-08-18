@@ -13,6 +13,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..core import health
 from ..core.chunking import CHUNKING_VERSION
 from .migrations import SCHEMA_VERSION, add_column, upgrade
 
@@ -625,7 +626,11 @@ class Database:
         """
         return self.con.execute(
             "SELECT c.*, t.name AS task_name, t.id AS task_id, "
-            "       t.review_state AS task_review_state "
+            "       t.review_state AS task_review_state, "
+            # 업무의 확인 여부를 화면에서 다시 판정하려면 옛 열도 함께
+            # 와야 한다(status.of_task). review_state만 보면 rename처럼
+            # 옛 열에만 흔적을 남기는 경로에서 확인이 조용히 강등된다.
+            "       t.status AS task_status, t.origin AS task_origin "
             "FROM task_cycles c JOIN tasks t ON t.id = c.task_id "
             "WHERE t.not_a_task = 0 AND t.merged_into IS NULL AND c.kind != 'none' "
             "ORDER BY c.years_observed DESC"
@@ -889,6 +894,41 @@ class Database:
     _LIVE_TASK = "t.not_a_task = 0 AND t.merged_into IS NULL"
     _TASK_DONE = "(t.review_state = 'confirmed' OR t.status IN ('approved','edited'))"
 
+    def task_health_inputs(self) -> list:
+        """업무마다 건강도 판정에 필요한 사실을 한 번에 모은다 (계획서 §19).
+
+        업무 수만큼 질의를 날리지 않는다 — 여섯 업무면 괜찮지만 수십 개가
+        되면 목록 화면이 눈에 띄게 느려진다. 판정 규칙은 여기 두지 않는다
+        (core/health.py). 이 계층은 세는 일만 한다.
+        """
+        return self.con.execute(
+            f"""
+            SELECT t.id AS task_id, t.name, t.description,
+                   {self._TASK_DONE} AS reviewed,
+                   (SELECT COUNT(*) FROM task_docs td WHERE td.task_id = t.id)
+                       AS doc_count,
+                   (SELECT COUNT(*) FROM task_docs td
+                     WHERE td.task_id = t.id AND td.is_primary = 1)
+                       AS has_primary,
+                   (SELECT COUNT(*) FROM task_reading r WHERE r.task_id = t.id)
+                       AS reading_count,
+                   (SELECT COUNT(*) FROM task_cycles c WHERE c.task_id = t.id)
+                       AS has_cycle,
+                   (SELECT COUNT(*) FROM task_steps s WHERE s.task_id = t.id)
+                       AS step_count,
+                   (SELECT MAX(d.eff_year) FROM task_docs td
+                     JOIN documents d ON d.id = td.doc_id
+                     WHERE td.task_id = t.id AND d.missing_since IS NULL)
+                       AS latest_year,
+                   (SELECT MAX(d.eff_year) FROM documents d
+                     WHERE d.missing_since IS NULL)
+                       AS this_year
+            FROM tasks t
+            WHERE {self._LIVE_TASK}
+            ORDER BY t.name
+            """
+        ).fetchall()
+
     def handover_counts(self) -> dict[str, int]:
         """네 축의 (확인함, 전체). 계획서 §18의 네 줄이 여기서 나온다."""
         one = self.con.execute(
@@ -932,6 +972,65 @@ class Database:
             (doc_id, "done" if done else "pending"),
         )
         self.audit("reading.mark", str(doc_id), "done" if done else "pending")
+
+    def stray_counts(self) -> dict[str, int]:
+        """첫 주 항목 '미분류 최근 문서' (계획서 §18).
+
+        미분류 **전체**를 세지 않는다. 오래된 자료가 어느 업무에도 안 붙는
+        것은 정상이고(§7), 수천 건짜리 할 일은 영원히 끝나지 않아 가이드
+        전체를 죽은 항목으로 만든다. 인수인계에서 실제로 문제가 되는 것은
+        **최근 자료인데 어디에도 속하지 않은 문서**다.
+
+        '최근'의 기준은 건강도와 같다 — 오늘이 아니라 자료 전체의 최신
+        연도(core/health.py). 두 화면이 다른 잣대를 쓰면 안 된다.
+
+        확인은 두 가지 방법으로 끝난다. 업무에 배정하면 미분류에서 빠지고
+        (total이 줄고), 업무와 무관한 문서면 '업무 없음'으로 표시한다
+        (done이 는다). 어느 쪽이든 사람이 한 번 본 것이다.
+        """
+        one = self.con.execute(
+            f"""
+            WITH recent AS (
+                SELECT d.id FROM documents d
+                WHERE d.missing_since IS NULL
+                  AND d.parse_status IN ('ok','partial')
+                  AND d.eff_year IS NOT NULL
+                  AND d.eff_year >= (
+                      SELECT MAX(eff_year) FROM documents WHERE missing_since IS NULL
+                  ) - {health.RECENT_YEARS}
+                  AND NOT EXISTS(SELECT 1 FROM task_docs td WHERE td.doc_id = d.id)
+            )
+            SELECT
+              (SELECT COUNT(*) FROM recent) AS strays_total,
+              (SELECT COUNT(*) FROM recent r
+                JOIN handover_checks h
+                  ON h.kind = 'stray' AND h.target_id = r.id AND h.state = 'done'
+              ) AS strays_done
+            """
+        ).fetchone()
+        return {key: one[key] or 0 for key in one.keys()}
+
+    def stray_marks(self) -> set[int]:
+        """'업무 없음'으로 표시한 문서 id."""
+        rows = self.con.execute(
+            "SELECT target_id FROM handover_checks WHERE kind = 'stray' AND state = 'done'"
+        ).fetchall()
+        return {row["target_id"] for row in rows}
+
+    def mark_stray(self, doc_id: int, done: bool = True) -> None:
+        """'이 문서는 업무와 무관하다' 표시. 읽음 표시와 같은 자리에 적는다.
+
+        문서를 지우거나 숨기지 않는다 — 판단이 틀렸을 때 되돌릴 수 있어야
+        하고, 원본은 어차피 건드리지 않는다.
+        """
+        self.con.execute(
+            "INSERT INTO handover_checks(kind, target_id, state, updated_at) "
+            "VALUES ('stray', ?, ?, datetime('now')) "
+            "ON CONFLICT(kind, target_id) DO UPDATE SET "
+            "state = excluded.state, updated_at = excluded.updated_at",
+            (doc_id, "done" if done else "pending"),
+        )
+        self.audit("stray.mark", str(doc_id), "done" if done else "pending")
 
     def unclassified_count(self) -> int:
         return self.con.execute(

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from ...core import status
 from ...core.timeline import CycleGuess
 
 CONFIDENCE_LABEL = {"high": "높음", "medium": "보통", "low": "낮음"}
@@ -67,6 +68,33 @@ def upcoming(cycles: list, today: date) -> list[Upcoming]:
 def is_now(entry: Upcoming) -> bool:
     """'지금 챙길 일'인가. 이 판정을 쓰는 화면이 셋이라 여기 하나만 둔다."""
     return entry.running_now or entry.days_away <= SOON_DAYS
+
+
+def month_counts(cycles: list, today: date) -> dict[str, int]:
+    """첫날 항목 '이번 달 업무' (계획서 §18).
+
+    발령 첫날 가장 급한 것은 업무 일곱 개를 다 보는 일이 아니라, **지금
+    돌아가고 있는 일**을 아는 것이다. 그래서 이번 달에 걸린 업무만 따로
+    센다.
+
+    '지금 걸렸나'의 판정(is_now)은 일정 화면·업무 홈과 같은 것을 쓴다.
+    한 업무에 주기가 여럿일 수 있으므로 업무 단위로 접는다 — 주기 수로
+    세면 주기를 많이 찾은 업무가 그만큼 무거워진다.
+    """
+    running: dict[int, bool] = {}
+    for entry in upcoming(cycles, today):
+        if not is_now(entry):
+            continue
+        confirmed = status.of_task({
+            "review_state": entry.row["task_review_state"],
+            "status": entry.row["task_status"],
+            "origin": entry.row["task_origin"],
+        }) == status.CONFIRMED
+        running[entry.task_id] = running.get(entry.task_id, True) and confirmed
+    return {
+        "month_total": len(running),
+        "month_done": sum(1 for done in running.values() if done),
+    }
 
 
 def parse_months(raw: str | None) -> list[int]:

@@ -61,6 +61,25 @@ class FlowGrid(QWidget):
         super().resizeEvent(event)
         self._relayout()
 
+    def _lock_height(self) -> None:
+        """카드가 필요로 하는 높이를 **하한으로 못 박는다.**
+
+        힌트만으로는 부족하다. 세로 공간이 모자라면 Qt는 힌트를 무시하고
+        줄일 수 있는 위젯부터 줄이는데, 줄바꿈 라벨의 '최소'는 한 줄이라
+        카드가 제 내용보다 작아진다 — 그러면 카드 안에서 제목·설명·뱃지가
+        서로 겹쳐 그려진다(업무 홈에 건강도 판을 붙이자 실제로 그랬다).
+
+        minimumHeight는 힌트가 아니라 제약이라 그 아래로는 눌리지 않고,
+        대신 바깥 스크롤이 생긴다. 세로 스크롤 안에 사는 위젯이니 그게 맞다.
+        """
+        if not self._cards:
+            self.setMinimumHeight(0)
+            return
+        rows = (len(self._cards) + self._columns - 1) // max(1, self._columns)
+        tallest = max(card.sizeHint().height() for card in self._cards)
+        spacing = self._grid.spacing()
+        self.setMinimumHeight(rows * tallest + (rows - 1) * spacing)
+
     def _column_count(self) -> int:
         width = self.width()
         if width <= 0:
@@ -86,3 +105,25 @@ class FlowGrid(QWidget):
         # stretch가 남아 있으면 열 폭이 어긋나므로 먼저 지운다.
         for col in range(self._max_columns):
             self._grid.setColumnStretch(col, 1 if col < columns else 0)
+
+        self._lock_height()
+
+    def _lock_height(self) -> None:
+        """카드가 필요로 하는 높이를 **하한으로 못 박는다.**
+
+        힌트만으로는 부족하다. 세로 공간이 모자라면 Qt는 힌트를 무시하고
+        줄일 수 있는 위젯부터 줄이는데, 줄바꿈 라벨의 '최소'는 한 줄이라
+        카드가 제 내용보다 작아진다 — 그러면 카드 안에서 제목·설명·뱃지가
+        서로 겹쳐 그려진다(업무 홈에 건강도 판을 붙이자 실제로 그랬다).
+
+        minimumHeight는 힌트가 아니라 제약이라 그 아래로 눌리지 않고, 대신
+        바깥에 스크롤이 생긴다. 세로 스크롤 안에 사는 위젯이니 그게 맞다.
+        """
+        if not self._cards:
+            self.setMinimumHeight(0)
+            return
+        columns = max(1, self._columns)
+        rows = (len(self._cards) + columns - 1) // columns
+        tallest = max(card.sizeHint().height() for card in self._cards)
+        spacing = self._grid.spacing()
+        self.setMinimumHeight(rows * tallest + (rows - 1) * spacing)

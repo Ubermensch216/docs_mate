@@ -564,9 +564,23 @@ class DocumentsView(QWidget):
             self.detail.addWidget(
                 UnknownBlock(
                     "어느 업무에도 배정되지 않았습니다. 업무와 무관한 문서라면 "
-                    "그대로 두어도 됩니다."
+                    "'업무 없음'으로 표시해 두세요."
                 )
             )
+            # 인수인계 가이드(계획서 §18)의 '미분류 최근 문서'는 여기서
+            # 끝난다. 배정하면 미분류에서 빠지고, 무관한 문서면 표시로
+            # 끝난다 — 둘 다 아니면 그 문서는 영원히 할 일로 남는다.
+            marked = row["id"] in self.db.stray_marks()
+            mark = QPushButton("업무 없음 표시 해제" if marked else "업무 없음으로 표시")
+            mark.setObjectName("Quiet")
+            mark.setCursor(Qt.CursorShape.PointingHandCursor)
+            mark.setToolTip(
+                "문서를 지우거나 숨기지 않습니다. 인수인계에서 확인한 것으로만 셉니다."
+            )
+            mark.clicked.connect(
+                lambda _=False, i=row["id"], done=not marked: self._mark_stray(i, done)
+            )
+            self.detail.addWidget(mark, alignment=Qt.AlignmentFlag.AlignLeft)
         for link in links:
             line = QHBoxLayout()
             line.setSpacing(theme.SP_SM)
@@ -605,6 +619,10 @@ class DocumentsView(QWidget):
         if task_id is None:
             return
         self.db.assign_document(task_id, doc_id)
+        self.refresh()
+
+    def _mark_stray(self, doc_id: int, done: bool) -> None:
+        self.db.mark_stray(doc_id, done)
         self.refresh()
 
     def _detach_task(self, task_id: int, doc_id: int) -> None:

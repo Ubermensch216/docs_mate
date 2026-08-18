@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core import handover, status, timeline
+from ...core import compare, guide, handover, health, status, timeline
 from ...db import Database
 from .. import theme
 from ..widgets import (
@@ -68,6 +68,7 @@ from ..widgets import (
 from . import evidence
 from .cycle_format import (
     cycle_headline,
+    month_counts,
     cycle_note,
     is_now,
     next_occurrence_text,
@@ -90,6 +91,19 @@ DETAIL_TABS = (
     (HOW, "어떻게 처리했나"),
     (DOCS, "이 업무의 문서"),
 )
+# 건강도 판에 세워 둘 업무 수. 넘치면 판이 목록이 되어 '요약'이 아니게 된다.
+HEALTH_ROWS = 5
+
+# 연도 비교 — 한 해의 칸 너비와 변화 종류별 기호. 색만으로 구분하지 않는다.
+_COMPARE_COL_W = 260
+_CHANGE_MARK = {
+    compare.ADDED: "＋",
+    compare.GONE: "－",
+    compare.MOVED: "↕",
+    compare.REPEAT: "×",
+    compare.SHIFT: "→",
+}
+
 DETAIL_HINTS = {
     READ: "이 업무를 처음 맡았다면 이 순서로 읽으세요. 고른 이유를 함께 적었습니다.",
     WHEN: "자료에 남은 문서의 시점을 연도별로 편 것입니다. "
@@ -111,6 +125,7 @@ class TasksView(QWidget):
         self.db = db
         self._task_id: int | None = None   # None이면 목록, 값이 있으면 상세
         self._how_year: dict[int, int] = {}   # task_id -> 사용자가 고른 연도
+        self._how_against: dict[int, int] = {}   # task_id -> 견줘 볼 다른 연도
         self._tab = READ
         self.setObjectName("Canvas")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -240,7 +255,8 @@ class TasksView(QWidget):
         # 인수인계에서 가장 먼저 궁금한 건 "얼마나 끝냈나"다. 카드를 세어
         # 알아내게 하지 말고 머리에서 바로 말한다.
         done = sum(1 for row in tasks if status.of_task(row) == status.CONFIRMED)
-        progress = handover.summarize(self.db.handover_counts())
+        tally = dict(self.db.handover_counts())
+        progress = handover.summarize(tally)
         marks = QHBoxLayout()
         marks.setSpacing(theme.SP_SM)
         marks.addWidget(Badge(f"{status.symbol(status.CONFIRMED)} 확인함 {done}", "ok"))
@@ -249,7 +265,7 @@ class TasksView(QWidget):
         marks.addStretch(1)
         self.head.addLayout(marks)
 
-        self._render_start_here(tasks, progress)
+        self._render_start_here(tasks, progress, tally)
 
         # 카드 그리드로 한 화면 조망. 창을 넓히면 열이 늘어난다.
         grid = FlowGrid()
@@ -257,22 +273,89 @@ class TasksView(QWidget):
             grid.add_card(self._task_card(row))
         self.column.addWidget(grid)
 
+        self._render_health()
         self._render_leftovers(counts)
 
-    def _render_start_here(self, tasks: list, progress) -> None:
-        """‘지금 먼저 확인할 것’ (계획서 §7.1·§18).
+    def _render_health(self) -> None:
+        """업무기억 건강도 (계획서 §19).
+
+        진행도가 "얼마나 확인했나"라면 이건 **무엇이 비어 있나**다. 둘은
+        다른 질문이라 자리도 다르다 — 진행도는 위에서 전체를 말하고, 여기는
+        업무별로 빠진 것을 짚는다.
+
+        빠진 것이 없는 업무는 적지 않는다. 다 좋다는 목록을 매번 읽게 하는
+        것은 정보가 아니라 노동이다.
+        """
+        items = health.summarize(self.db.task_health_inputs())
+        weak = [item for item in items if item.grade != health.GOOD]
+        if not items:
+            return
+
+        panel = SubPanel()
+        panel.setMaximumWidth(theme.CONTENT_MAX_W)
+        head = QHBoxLayout()
+        head.setSpacing(theme.SP_SM)
+        title = QLabel("업무기억 건강도")
+        title.setObjectName("StartHereHead")
+        head.addWidget(title)
+        head.addWidget(
+            InfoDot(
+                "다음 담당자에게 넘기기 전에 무엇이 부족한지 봅니다. "
+                "업무 설명·자료·먼저 읽을 문서·반복 주기·처리 순서·대표 문서·"
+                "담당자 확인을 규칙으로만 점검합니다(AI를 쓰지 않습니다)."
+            ),
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        head.addStretch(1)
+        good = len(items) - len(weak)
+        head.addWidget(
+            muted_label(f"양호 {good} · 손볼 것 {len(weak)}", small=True, wrap=False)
+        )
+        panel.body.addLayout(head)
+
+        if not weak:
+            panel.body.addWidget(
+                muted_label("모든 업무가 넘길 수 있는 상태입니다.", small=True)
+            )
+            self.column.addWidget(panel)
+            return
+
+        for item in weak[:HEALTH_ROWS]:
+            row = QHBoxLayout()
+            row.setSpacing(theme.SP_SM)
+            name = QPushButton(item.name)
+            name.setObjectName("Link")
+            name.setCursor(Qt.CursorShape.PointingHandCursor)
+            name.clicked.connect(lambda _=False, i=item.task_id: self.open_task(i))
+            row.addWidget(name)
+            row.addWidget(Badge(item.grade_label(), health.GRADE_BADGE[item.grade]))
+            row.addWidget(muted_label(item.headline(), small=True), 1)
+            panel.body.addLayout(row)
+
+        if len(weak) > HEALTH_ROWS:
+            panel.body.addWidget(
+                muted_label(f"외 {len(weak) - HEALTH_ROWS}개 업무", small=True)
+            )
+        self.column.addWidget(panel)
+
+    def _render_start_here(self, tasks: list, progress, tally: dict) -> None:
+        """‘지금 먼저 확인할 것’ + 첫날/첫 주 가이드 (계획서 §7.1·§18).
 
         분석이 끝난 자리에서 "이제 뭘 하지"를 사용자가 스스로 알아내게 두지
         않는다. 별도 Dashboard 메뉴를 만들지 않고 업무 홈 맨 위에 둔다 —
         메뉴가 늘면 이 제품이 답하는 네 질문의 구조가 무너진다.
 
+        판 하나에 **지도와 다음 걸음**을 함께 둔다. 위는 지금 단계에서
+        확인할 것들(첫날/첫 주), 아래는 그 중 당장 누를 수 있는 자리다.
+        둘을 다른 판으로 떼면 같은 일을 두 번 읽게 된다.
+
         빈 목록은 아예 그리지 않는다. 할 일이 없는데 '할 일' 판이 남아 있으면
         그 판을 매번 읽고 지나가야 한다.
         """
         today = date.today()
-        soon = [
-            entry for entry in upcoming(self.db.all_cycles(), today) if is_now(entry)
-        ]
+        cycles = self.db.all_cycles()
+        soon = [entry for entry in upcoming(cycles, today) if is_now(entry)]
         unconfirmed = [
             row for row in tasks if status.of_task(row) != status.CONFIRMED
         ]
@@ -281,7 +364,15 @@ class TasksView(QWidget):
             pick for row in tasks for pick in self.db.task_reading(row["id"])
             if pick["doc_id"] not in marks
         ]
-        if not (soon or unconfirmed or unread):
+
+        counts = dict(tally)
+        counts.update(self.db.stray_counts())
+        counts.update(month_counts(cycles, today))
+        plan = guide.summarize(counts)
+
+        # 할 일이 하나도 없을 때만 판을 지운다. 누를 자리가 없더라도 아직
+        # 확인할 단계가 남았으면 그 사실은 말해야 한다.
+        if not (soon or unconfirmed or unread) and plan.stage == guide.DONE:
             return
 
         card = Card(tone="primary")
@@ -300,6 +391,8 @@ class TasksView(QWidget):
         head.addStretch(1)
         head.addWidget(muted_label(progress.headline(), small=True, wrap=False))
         card.body.addLayout(head)
+
+        self._render_stage(card, plan)
 
         if soon:
             names = ", ".join(entry.name for entry in soon[:3])
@@ -341,6 +434,58 @@ class TasksView(QWidget):
                 )
             )
         self.column.addWidget(card)
+
+    def _render_stage(self, card, plan) -> None:
+        """첫날 / 첫 주 체크리스트 (계획서 §18).
+
+        **지금 단계 것만 적는다.** 첫날인 사람에게 여섯 줄을 보이면 그것이
+        곧 "오늘 여섯 가지를 해야 한다"로 읽힌다. 다음 단계는 몇 가지가
+        기다리는지만 한 줄로 알린다 — 끝이 있는 일이라는 것은 보여야 한다.
+
+        줄마다 기호(✓ ◐ △)를 앞에 둔다. 색만으로 구분하면 흑백 인쇄나
+        색각 이상에서 상태가 사라진다(PRD §18.4).
+        """
+        if not plan.measured:
+            return
+
+        stage = QLabel(plan.headline())
+        stage.setObjectName("StartHereHead")
+        card.body.addWidget(stage)
+
+        if plan.stage == guide.DONE:
+            card.body.addWidget(
+                muted_label(
+                    "확인할 것을 모두 마쳤습니다. 이제 업무를 하면서 채워 나가면 됩니다.",
+                    small=True,
+                )
+            )
+            return
+
+        nxt = plan.next_item()
+        for item in plan.of_stage(plan.stage):
+            line = QHBoxLayout()
+            line.setSpacing(theme.SP_SM)
+            mark = QLabel(f"{status.symbol(item.state)}  {item.sentence()}")
+            mark.setObjectName(
+                "StageDone" if item.state == status.CONFIRMED else "Muted"
+            )
+            line.addWidget(mark)
+            # 할 일 문구는 아직 안 된 것에만, 그것도 다음 차례 하나에만 붙인다.
+            # 여섯 줄이 모두 설명을 달고 있으면 어느 것부터인지 다시 알 수 없다.
+            if nxt is not None and item.key == nxt.key:
+                line.addWidget(muted_label(f"— {item.todo}", small=True), 1)
+            line.addStretch(1)
+            card.body.addLayout(line)
+
+        if plan.stage == guide.DAY:
+            later = plan.of_stage(guide.WEEK)
+            if later:
+                card.body.addWidget(
+                    muted_label(
+                        f"첫 주에 볼 것 {len(later)}가지는 이것을 마치면 보여 드립니다.",
+                        small=True,
+                    )
+                )
 
     def _start_row(self, headline: str, detail: str, action: str, slot) -> QWidget:
         panel = SubPanel()
@@ -505,6 +650,12 @@ class TasksView(QWidget):
         marks.addStretch(1)
         self.head.addLayout(marks)
 
+        report = self._health_of(task_id)
+        if report is not None and report.grade != health.GOOD:
+            marks.insertWidget(
+                2, Badge(f"기억 {report.grade_label()}", health.GRADE_BADGE[report.grade])
+            )
+
         # 설명은 상태보다 아래다. 위에 두면 제목과 붙어 두 줄 제목처럼 읽힌다.
         if row["description"]:
             about = QHBoxLayout()
@@ -520,6 +671,13 @@ class TasksView(QWidget):
                     )
                 )
             self.head.addLayout(about)
+
+        if report is not None and report.missing:
+            # 무엇이 빠졌는지 말하지 않는 등급은 채근일 뿐이다.
+            lacks = " · ".join(check.label for check in report.missing)
+            self.head.addWidget(
+                muted_label(f"아직 없는 것 — {lacks}", small=True)
+            )
 
         cycle = self.db.task_cycle(task_id)
         self.tabs.set_count(READ, "먼저 읽을 문서", len(picks))
@@ -538,6 +696,13 @@ class TasksView(QWidget):
 
         self.tabs.select(self._tab)
         self.stack.setCurrentWidget(self.pages[self._tab])
+
+    def _health_of(self, task_id: int):
+        """업무 하나의 건강도. 목록과 같은 규칙을 쓴다(core/health.py)."""
+        for row in self.db.task_health_inputs():
+            if row["task_id"] == task_id:
+                return health.evaluate(row)
+        return None
 
     def _render_reading(self, column: QVBoxLayout, picks) -> None:
         column.addWidget(hint_row("이 순서로 읽으세요", DETAIL_HINTS[READ]))
@@ -754,9 +919,18 @@ class TasksView(QWidget):
         if selected not in years:
             selected = default_year
 
+        # 비교 중일 때는 머리글도 비교의 말을 해야 한다. "2025년엔 이렇게
+        # 처리한 것으로 보입니다" 아래에 두 해가 나란히 서 있으면 어느 해를
+        # 말하는 문장인지 알 수 없다.
+        against_now = self._how_against.get(task_id)
         header = QHBoxLayout()
         header.setSpacing(theme.SP_SM)
-        lead = QLabel(f"{selected}년엔 이렇게 처리한 것으로 보입니다")
+        lead = QLabel(
+            f"{min(selected, against_now)}년과 {max(selected, against_now)}년을 "
+            "견주어 봅니다"
+            if against_now in years and against_now != selected
+            else f"{selected}년엔 이렇게 처리한 것으로 보입니다"
+        )
         lead.setObjectName("Answer")
         header.addWidget(lead)
         header.addWidget(InfoDot(DETAIL_HINTS[HOW]), 0, Qt.AlignmentFlag.AlignVCenter)
@@ -771,7 +945,29 @@ class TasksView(QWidget):
             lambda _index, t=task_id, c=combo: self._change_how_year(t, c.currentData())
         )
         header.addWidget(combo)
+
+        # 비교는 **끄고 시작한다**. 두 해를 늘 나란히 보이면 한 해의 순서를
+        # 읽으려는 사람에게 매번 두 배의 화면을 읽히게 된다.
+        others = [y for y in ordered_years if y != selected]
+        against = self._how_against.get(task_id)
+        if against not in others:
+            against = None
+        if others:
+            pick = QComboBox()
+            pick.addItem("비교 안 함", 0)
+            for y in others:
+                pick.addItem(f"{y}년과 비교", y)
+            pick.setCurrentIndex(0 if against is None else others.index(against) + 1)
+            pick.setToolTip("두 해의 처리 흐름을 나란히 놓고 달라진 곳을 짚습니다")
+            pick.currentIndexChanged.connect(
+                lambda _i, t=task_id, c=pick: self._change_how_against(t, c.currentData())
+            )
+            header.addWidget(pick)
         column.addLayout(header)
+
+        if against is not None:
+            self._render_compare(column, task_id, selected, against)
+            return
 
         steps = self.db.task_steps(task_id, selected)
         if not steps:
@@ -868,6 +1064,96 @@ class TasksView(QWidget):
             if step["gap_note"]:
                 column.addWidget(UnknownBlock(step["gap_note"]))
 
+    def _render_compare(
+        self, column: QVBoxLayout, task_id: int, selected: int, against: int
+    ) -> None:
+        """연도 비교 (계획서 §20).
+
+        **변화점을 먼저, 표를 나중에** 적는다. 두 해를 나란히 놓는 것까지는
+        표가 하는 일이지만, "무엇이 달라졌나"는 사람이 두 열을 눈으로
+        훑어 찾아내야 하는 것이 아니다. 그 문장이 이 기능의 결과물이다.
+
+        변화점마다 근거 문서를 단다. 근거 없는 변화 주장은 이 제품에서
+        가장 위험한 종류의 말이다 — 사용자가 확인할 방법이 없다.
+        """
+        earlier, later = sorted((selected, against))
+        result = compare.compare(
+            earlier, self.db.task_steps(task_id, earlier),
+            later, self.db.task_steps(task_id, later),
+        )
+
+        if not result.pairs:
+            column.addWidget(
+                UnknownBlock(
+                    f"{earlier}년과 {later}년 중 한쪽은 처리 순서를 "
+                    "재구성할 자료가 없어 견줄 수 없습니다."
+                )
+            )
+            return
+
+        lead = QLabel(result.headline())
+        lead.setObjectName("Answer")
+        column.addWidget(lead)
+
+        for change in result.changes:
+            row = QHBoxLayout()
+            row.setSpacing(theme.SP_SM)
+            row.addWidget(QLabel(_CHANGE_MARK[change.kind]))
+            row.addWidget(muted_label(change.sentence), 1)
+            if change.row is not None and change.row["doc_id"]:
+                row.addWidget(
+                    self._evidence_button(
+                        "근거 보기 →",
+                        "이 변화를 어느 문서에서 읽었는지 봅니다",
+                        lambda s=change.row: self._show_evidence(
+                            evidence.for_step(self.db, s), "연도 비교의 근거"
+                        ),
+                    )
+                )
+            column.addLayout(row)
+
+        if any(change.kind == compare.GONE for change in result.changes):
+            # 이 한 줄을 빼면 제품이 "그 단계를 없앴다"고 단정한 것이 된다.
+            column.addWidget(
+                UnknownBlock(
+                    "보이지 않는 단계는 그해에 그만둔 것일 수도, 자료가 남지 "
+                    "않은 것일 수도 있습니다. 자료만으로는 둘을 가릴 수 없습니다."
+                )
+            )
+
+        head = QHBoxLayout()
+        head.setSpacing(theme.SP_SM)
+        for year in (earlier, later):
+            title = QLabel(f"{year}년")
+            title.setObjectName("StartHereHead")
+            title.setFixedWidth(_COMPARE_COL_W)
+            head.addWidget(title)
+        head.addStretch(1)
+        column.addLayout(head)
+
+        for pair in result.pairs:
+            line = ListRow()
+            line.row.setSpacing(theme.SP_SM)
+            line.row.addWidget(self._compare_cell(pair.left, pair.state))
+            line.row.addWidget(self._compare_cell(pair.right, pair.state))
+            line.row.addStretch(1)
+            column.addWidget(line)
+
+    def _compare_cell(self, item, state: str) -> QLabel:
+        """한 해의 칸 하나. 빈 칸도 빈 자리로 그린다 — 지우면 두 열의 줄이
+        어긋나서 무엇과 무엇이 짝인지 알 수 없다."""
+        if item is None:
+            cell = QLabel("—")
+            cell.setObjectName("Muted")
+        else:
+            when = f"  {item.day_hint}" if item.day_hint else ""
+            cell = QLabel(f"{_circled(item.ordinal)} {item.label}{when}")
+            cell.setObjectName(
+                "StepLabel" if state == compare.SAME else "CompareChanged"
+            )
+        cell.setFixedWidth(_COMPARE_COL_W)
+        return cell
+
     def _step_menu(self, task_id: int, year: int, step, owner: QWidget) -> QMenu:
         """메뉴의 부모는 항상 그 메뉴를 여는 버튼이다 (아래 '교정' 절 참고)."""
         menu = QMenu(owner)
@@ -882,6 +1168,13 @@ class TasksView(QWidget):
 
     def _change_how_year(self, task_id: int, year: int) -> None:
         self._how_year[task_id] = year
+        self.refresh()
+
+    def _change_how_against(self, task_id: int, year: int) -> None:
+        if year:
+            self._how_against[task_id] = year
+        else:
+            self._how_against.pop(task_id, None)
         self.refresh()
 
     def _render_by_year(self, column: QVBoxLayout, task_id: int, rows) -> None:

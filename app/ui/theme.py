@@ -863,6 +863,9 @@ def stylesheet(text_size: str = "medium") -> str:
     /* 질문 화면의 흐름 카드에서 '지금 보는 단계'. 색과 무게를 함께 올린다 —
        색만으로 구분하지 않는다는 규칙(PRD §18.4)은 여기에도 적용된다. */
     QLabel#StepLabelHere {{ color: {PRIMARY}; font-weight: 700; }}
+    /* 연도 비교에서 달라진 칸. 기호(＋ － ↕)가 이미 변화를 말하므로 여기서는
+       무게만 올린다 — 색을 하나 더 늘리면 상태 어휘가 흐려진다. */
+    QLabel#CompareChanged {{ color: {PRIMARY}; font-weight: 700; }}
     QLabel#YearChip {{
         background: {SURFACE_ALT};
         color: {TEXT_MUTED};
