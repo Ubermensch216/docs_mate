@@ -126,6 +126,16 @@ def test_default_threshold_matches_measured_separation():
     assert 0.74 < DEFAULT_THRESHOLD < 0.86
 
 
+def test_default_threshold_sits_in_the_flat_stretch_that_was_measured():
+    """0.81·0.82·0.83이 같은 점수를 낸 구간의 한가운데다 (F1 0.985).
+
+    한 점에서만 좋은 값은 다음 자료에서 무너진다. 이 시험은 누군가 0.80
+    같은 옛 값이나 0.84 이상(미분류가 2건→6건으로 뛰던 지점)으로 되돌릴 때
+    **왜 그 자리였는지**를 다시 읽게 하려고 둔다.
+    """
+    assert 0.81 <= DEFAULT_THRESHOLD <= 0.83
+
+
 # ── 파일명 공통 낱말 ────────────────────────────────────────────────
 
 def test_common_tokens_finds_the_shared_business_word():
