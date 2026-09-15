@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -46,6 +48,7 @@ from ...core import status
 from ...db import Database, representative_predicate
 from ...jobs import SummaryRunner
 from ...search import fts
+from ...search.documents import find_documents
 from .. import theme
 from ..widgets import (
     Badge,
@@ -104,6 +107,8 @@ class DocumentsView(QWidget):
     def __init__(self, db: Database, parent: QWidget | None = None):
         super().__init__(parent)
         self.db = db
+        self._page = 0
+        self._filter_key = None
         self._current_id: int | None = None
         self._summary_doc_id: int | None = None      # 요약 중인 문서
         self._summary_error: tuple[int, str] | None = None
@@ -153,18 +158,30 @@ class DocumentsView(QWidget):
         self.summary = muted_label("")
         body_wrap.addWidget(self.summary)
 
-        body = QHBoxLayout()
-        body.setSpacing(theme.SP_LG)
-        body.addLayout(self._build_table(), 1)
-        body.addWidget(self._build_detail())
-        body_wrap.addLayout(body, 1)
-        outer.addLayout(body_wrap, 1)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        listing = QWidget()
+        listing.setLayout(self._build_table())
+        self.splitter.addWidget(listing)
+        self.splitter.addWidget(self._build_detail())
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setSizes([700, theme.DETAIL_PANEL_W])
+        body_wrap.addWidget(self.splitter, 1)
+        body_holder = QWidget()
+        body_holder.setLayout(body_wrap)
+        outer.addWidget(body_holder, 1)
 
         self.empty = EmptyState(
             "아직 찾은 문서가 없습니다",
             "자료원을 등록하고 분석을 시작하면 먼저 찾은 파일부터 여기에 나타납니다.",
         )
-        outer.addWidget(self.empty)
+        body_wrap.addWidget(self.empty, 1)
+        self.no_results = EmptyState(
+            "검색 조건에 맞는 문서가 없습니다",
+            "다른 검색어를 입력하거나 검색 조건을 초기화해 전체 자료를 확인하세요.",
+            "검색 조건 초기화", self._reset_search,
+        )
+        body_wrap.addWidget(self.no_results, 1)
 
         self.refresh()
 
@@ -175,6 +192,8 @@ class DocumentsView(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("파일명·본문·작성자 검색")
         self.search.setMinimumHeight(theme.CONTROL_H)
+        self.search.setClearButtonEnabled(True)
+        self.search.setAccessibleName("문서 검색어")
         self.search.returnPressed.connect(self.refresh)
         row.addWidget(self.search, 1)
         find = QPushButton("검색")
@@ -182,6 +201,9 @@ class DocumentsView(QWidget):
         find.setMinimumWidth(88)
         find.clicked.connect(self.refresh)
         row.addWidget(find)
+        reset = QPushButton("초기화")
+        reset.clicked.connect(self._reset_search)
+        row.addWidget(reset)
         return row
 
     def _build_filters(self) -> QHBoxLayout:
@@ -230,12 +252,31 @@ class DocumentsView(QWidget):
         self.table.doubleClicked.connect(self._open_selected)
         column.addWidget(self.table, 1)
 
+        paging = QHBoxLayout()
+        self.page_label = muted_label("", wrap=False)
+        paging.addWidget(self.page_label)
+        paging.addStretch(1)
+        self.page_size = QComboBox()
+        for size in (50, 100, 200):
+            self.page_size.addItem(f"{size}개씩", size)
+        self.page_size.setCurrentIndex(1)
+        self.page_size.setAccessibleName("페이지당 문서 수")
+        self.page_size.currentIndexChanged.connect(self.refresh)
+        paging.addWidget(self.page_size)
+        self.previous_page = QPushButton("이전")
+        self.previous_page.clicked.connect(lambda: self._turn_page(-1))
+        self.next_page = QPushButton("다음")
+        self.next_page.clicked.connect(lambda: self._turn_page(1))
+        paging.addWidget(self.previous_page)
+        paging.addWidget(self.next_page)
+        column.addLayout(paging)
+
         actions = QHBoxLayout()
         actions.setSpacing(theme.SP_SM)
-        open_file = QPushButton("원본 열기")
+        open_file = self.open_file = QPushButton("원본 열기")
         open_file.clicked.connect(self._open_selected)
         actions.addWidget(open_file)
-        open_folder = QPushButton("폴더 열기")
+        open_folder = self.open_folder = QPushButton("폴더 열기")
         open_folder.clicked.connect(self._reveal_selected)
         actions.addWidget(open_folder)
         actions.addStretch(1)
@@ -246,7 +287,7 @@ class DocumentsView(QWidget):
         panel = QScrollArea()
         panel.setObjectName("DetailPane")
         panel.setWidgetResizable(True)
-        panel.setFixedWidth(theme.DETAIL_PANEL_W)
+        panel.setMinimumWidth(260)
         # 긴 경로 때문에 가로 스크롤이 생기면 패널이 지저분해진다. 경로는
         # 가운데를 줄여 보여주고 전체는 툴팁으로 준다.
         panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -266,11 +307,18 @@ class DocumentsView(QWidget):
     def refresh(self) -> None:
         rows = self._query(self.search.text().strip())
         has_rows = bool(rows)
-        self.table.setVisible(has_rows)
-        self.detail_panel.setVisible(has_rows)
-        self.empty.setVisible(not has_rows)
-
         counts = self.db.counts()
+        self.splitter.setVisible(has_rows)
+        self.empty.setVisible(not has_rows and not counts["total"])
+        self.no_results.setVisible(not has_rows and bool(counts["total"]))
+        self.open_file.setEnabled(has_rows)
+        self.open_folder.setEnabled(has_rows)
+        result = self._result
+        first = result.page * self.page_size.currentData() + 1 if result.total else 0
+        last = first + len(rows) - 1 if rows else 0
+        self.page_label.setText(f"{result.page + 1} / {result.pages} 페이지")
+        self.previous_page.setEnabled(result.page > 0)
+        self.next_page.setEnabled(result.page + 1 < result.pages)
         parts = [f"파일 {counts['total']:,}건", f"문서 {counts['documents']:,}건"]
         if counts["duplicate_extra"]:
             parts.append(f"중복 {counts['duplicate_extra']:,}건")
@@ -280,12 +328,14 @@ class DocumentsView(QWidget):
             parts.append(f"읽지 못함 {counts['parse_failed']:,}건")
         if counts["missing"]:
             parts.append(f"원본 없음 {counts['missing']:,}건")
-        self.summary.setText(" · ".join(parts) + f"   (표시 {len(rows):,}행)")
+        self.summary.setText(f"검색 결과 {result.total:,}건" + (f" · {first:,}–{last:,}번째 표시" if rows else ""))
+        self.summary.setToolTip(" · ".join(parts))
 
         # 건수를 거르개에 붙여 둔다. 누르기 전에 규모를 알아야 누를지 말지
         # 정할 수 있다(일정 화면 탭에서 쓴 것과 같은 규칙).
         self.unclassified_only.setText(f"미분류만 보기 ({self.db.unclassified_count():,})")
 
+        self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             self._fill(r, row)
@@ -295,48 +345,39 @@ class DocumentsView(QWidget):
         visible = [row["id"] for row in rows]
         if self._current_id not in visible:
             self._current_id = visible[0] if visible else None
-            if visible:
-                self.table.blockSignals(True)
-                self.table.selectRow(0)
-                self.table.blockSignals(False)
+        if self._current_id in visible:
+            self.table.selectRow(visible.index(self._current_id))
+        self.table.blockSignals(False)
         self._show_detail(self._current_id)
 
+    def _turn_page(self, delta: int) -> None:
+        self._page += delta
+        self.refresh()
+        self.table.setFocus()
+
+    def _reset_search(self) -> None:
+        self.search.clear()
+        for checkbox, checked in ((self.collapse_dups, True), (self.documents_only, True),
+                                  (self.unclassified_only, False)):
+            checkbox.blockSignals(True)
+            checkbox.setChecked(checked)
+            checkbox.blockSignals(False)
+        self._page = 0
+        self.refresh()
+        self.search.setFocus()
+
     def _query(self, term: str) -> list:
-        where = ["1=1"]
-        params: list = []
-
-        if self.documents_only.isChecked():
-            where.append("d.parse_status != 'skipped'")
-        if self.collapse_dups.isChecked():
-            where.append(REPRESENTATIVE)
-        if self.unclassified_only.isChecked():
-            where.append(UNCLASSIFIED)
-
-        if term:
-            # trigram FTS는 3글자 이상만 처리한다. 짧은 질의는 LIKE로 폴백한다.
-            # 이 판단·이스케이프 규칙은 질문 화면(RAG)과 공유한다(search/fts.py)
-            # — 갈라지면 같은 검색어에 화면마다 다른 결과가 나온다.
-            if fts.usable_for_trigram(term):
-                try:
-                    return self.db.con.execute(
-                        f"SELECT d.*, {DUP_COUNT} AS dup_n FROM document_fts f "
-                        f"JOIN documents d ON d.id = f.rowid "
-                        f"WHERE document_fts MATCH ? AND {' AND '.join(where)} "
-                        f"ORDER BY rank LIMIT 500",
-                        (fts.escape_match(term),),
-                    ).fetchall()
-                except Exception:
-                    pass
-            like = f"%{term}%"
-            where.append("(d.filename LIKE ? OR d.path LIKE ?)")
-            params += [like, like]
-
-        return self.db.con.execute(
-            f"SELECT d.*, {DUP_COUNT} AS dup_n FROM documents d "
-            f"WHERE {' AND '.join(where)} "
-            f"ORDER BY d.eff_date DESC NULLS LAST, d.filename LIMIT 500",
-            params,
-        ).fetchall()
+        key = (term, self.documents_only.isChecked(), self.collapse_dups.isChecked(),
+               self.unclassified_only.isChecked(), self.page_size.currentData())
+        if key != self._filter_key:
+            self._page = 0
+            self._filter_key = key
+        self._result = find_documents(
+            self.db, term, documents_only=key[1], collapse=key[2], unclassified=key[3],
+            page=self._page, page_size=key[4],
+        )
+        self._page = self._result.page
+        return self._result.rows
 
     def _fill(self, r: int, row) -> None:
         name = row["filename"]
@@ -345,12 +386,7 @@ class DocumentsView(QWidget):
             name = f"▸ {name}   ({dup_n}개 묶음)"
         self.table.setItem(r, 0, _cell(name, row["id"], row["path"]))
 
-        task = self.db.con.execute(
-            "SELECT t.name FROM task_docs td JOIN tasks t ON t.id = td.task_id "
-            "WHERE td.doc_id = ? LIMIT 1",
-            (row["id"],),
-        ).fetchone()
-        self.table.setItem(r, 1, _cell(task["name"] if task else "—"))
+        self.table.setItem(r, 1, _cell(row["task_name"] or "—"))
         self.table.setItem(r, 2, _cell(_when(row)))
         self.table.setItem(r, 3, _cell((row["ext"] or "").lstrip(".").upper()))
         self.table.setItem(r, 4, _cell(_human(row["size"] or 0)))
@@ -481,7 +517,7 @@ class DocumentsView(QWidget):
         self.detail.addWidget(
             muted_label(
                 f"{_when(row)}   ·   {PRECISION_LABEL.get(row['eff_precision'], '')}\n"
-                f"{KIND_LABEL.get(kind, kind)}에서 판정"
+                f"{KIND_LABEL.get(kind, kind or '근거 미상')}에서 판정"
             )
         )
         if kind == "fs":

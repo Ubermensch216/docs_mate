@@ -31,9 +31,10 @@ from __future__ import annotations
 
 import html
 import re
+import time
 from collections import Counter
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...db import Database
+from ...ai.settings import model_names
 from ...jobs import AskRunner, WarmupRunner
 from ...search.query import QueryScope
 from ...search.rag import Answer
@@ -100,6 +102,10 @@ class AskView(QWidget):
         self.db = db
         self._runner = AskRunner(db.path, self)
         self._runner.done.connect(self._on_answer)
+        self._runner.cancelled.connect(self._on_cancelled)
+        self._elapsed = QTimer(self)
+        self._elapsed.setInterval(1000)
+        self._elapsed.timeout.connect(self._update_waiting)
         # 사용자가 질문을 타이핑하는 동안 생성 모델을 미리 올려 둔다.
         # 첫 질문만 유독 느린 것은 거의 전부 모델 적재 때문이다.
         self._warmup = WarmupRunner(self)
@@ -170,7 +176,14 @@ class AskView(QWidget):
         self.send.setMinimumWidth(88)
         self.send.clicked.connect(self._ask)
         row.addWidget(self.send)
+        self.cancel_question = QPushButton("질문 취소")
+        self.cancel_question.clicked.connect(self._cancel_question)
+        self.cancel_question.hide()
+        row.addWidget(self.cancel_question)
         head.addLayout(row)
+        self.waiting = muted_label("")
+        self.waiting.hide()
+        head.addWidget(self.waiting)
 
         # 예시 질문과 지난 질문을 **한 줄**에 둔다. 세로로 두 목록을 쌓으면
         # 같은 문장이 두 번 보이고, 화면 왼쪽을 통째로 잡아먹는다.
@@ -295,6 +308,7 @@ class AskView(QWidget):
         self._reload_scopes()
         self._reload_questions()
         if ready:
+            self._warmup.configure(*model_names(self.db))
             self._warmup.start()   # 한 번만 돈다
         self.input.setEnabled(ready and not self._runner.running)
         self.send.setEnabled(ready and not self._runner.running)
@@ -303,7 +317,7 @@ class AskView(QWidget):
         self.notice.setVisible(bool(message))
         self.notice.setMessage(message)
 
-        if not self._runner.running:
+        if not self._runner.running and self._answer is None:
             self._render_idle_or_empty(ready)
 
     def _reload_questions(self) -> None:
@@ -385,16 +399,22 @@ class AskView(QWidget):
         counts = self.db.counts()
         if counts["total"] == 0:
             return False, "등록된 자료가 없습니다. 먼저 자료원을 추가하세요."
-        if counts["chunks_embedded"] == 0:
+        model = model_names(self.db)[1]
+        embedded = self.db.con.execute(
+            "SELECT COUNT(*) FROM embeddings e JOIN chunks c ON c.id=e.chunk_id "
+            "JOIN documents d ON d.id=c.doc_id WHERE e.model=? AND d.missing_since IS NULL",
+            (model,),
+        ).fetchone()[0]
+        if embedded == 0:
             return False, (
                 "질문에 답할 준비가 끝나지 않았습니다. 근거 없이 답하지 않기 위해 "
                 "자료를 다 읽고 서로 견줄 준비가 될 때까지 기다립니다."
             )
 
-        left = self.db.unembedded_chunk_count()
+        left = self.db.unembedded_chunk_count(model)
         if left:
-            missing = self.db.documents_missing_from_search()
-            done = counts["chunks_embedded"]
+            missing = self.db.documents_missing_from_search(model)
+            done = embedded
             text = (
                 f"질문에 답할 준비를 하는 중 {done:,} / {done + left:,} — "
                 f"아직 {left:,}조각을 읽고 있습니다. "
@@ -456,7 +476,14 @@ class AskView(QWidget):
         question = self.input.text().strip()
         if not question or self._runner.running:
             return
-        self._runner.start(question, self._chosen_scope())
+        if not self._runner.start(question, self._chosen_scope()):
+            return
+        self._started_at = time.monotonic()
+        self.cancel_question.show()
+        self.cancel_question.setEnabled(True)
+        self.waiting.show()
+        self._update_waiting()
+        self._elapsed.start()
         self.input.setEnabled(False)
         self.send.setEnabled(False)
         # 지난 답의 근거가 옆에 남아 있으면 새 답의 근거로 오해한다.
@@ -472,10 +499,34 @@ class AskView(QWidget):
         self._ask()
 
     def _on_answer(self, answer: Answer) -> None:
+        self._finish_waiting()
         self.input.setEnabled(True)
         self.send.setEnabled(True)
         self._render_answer(answer)
         self._reload_questions()
+
+    def _update_waiting(self) -> None:
+        seconds = int(time.monotonic() - self._started_at)
+        hint = "처음 질문할 때는 모델을 준비하는 시간이 더 걸릴 수 있습니다." if seconds >= 10 else "자료에서 근거를 찾아 답변을 준비하고 있습니다."
+        self.waiting.setText(f"{seconds}초 경과 · {hint}")
+
+    def _cancel_question(self) -> None:
+        self._elapsed.stop()
+        self.waiting.setText("질문을 취소하고 있습니다…")
+        self.cancel_question.setEnabled(False)
+        self._runner.cancel()
+
+    def _finish_waiting(self):
+        self._elapsed.stop()
+        self.cancel_question.hide()
+        self.waiting.hide()
+
+    def _on_cancelled(self):
+        self._finish_waiting()
+        self.refresh()
+        self.notice.setMessage("질문을 취소했습니다. 내용을 바꿔 다시 질문할 수 있습니다.")
+        self.notice.show()
+        self.input.setFocus()
 
     # ── 답변 ────────────────────────────────────────────────────────
     def _render_answer(self, answer: Answer) -> None:

@@ -338,13 +338,18 @@ class MainWindow(QMainWindow):
         """
         if not self.db.sources():
             return
+        from ..ai.settings import model_names
+        from ..ingest.parsers.base import PARSER_VERSION
+        embed_model = model_names(self.db)[1]
         pending = self.db.con.execute(
             "SELECT COUNT(*) AS n FROM documents d "
-            "LEFT JOIN doc_embeddings e ON e.doc_id = d.id "
+            "LEFT JOIN doc_embeddings e ON e.doc_id = d.id AND e.model = ? "
             "WHERE d.missing_since IS NULL AND d.parse_status != 'skipped' "
             "  AND (d.hash IS NULL OR d.parse_status = 'pending' "
             "       OR d.eff_date IS NULL "
-            "       OR (d.parse_status IN ('ok','partial') AND e.doc_id IS NULL))"
+            "       OR (d.parse_status IN ('ok','partial') AND "
+            "           (e.doc_id IS NULL OR COALESCE(d.parser_version,'') != ?)))",
+            (embed_model, PARSER_VERSION),
         ).fetchone()["n"]
         counts = self.db.counts()
         # 문서 처리는 끝났는데 업무를 아직 못 찾았거나, 업무는 찾았는데
@@ -358,7 +363,7 @@ class MainWindow(QMainWindow):
         needs_chunks = (
             counts["documents"] > 0
             and (self.db.get_meta("chunks_checked") is None
-                 or self.db.unembedded_chunk_count() > 0)
+                 or self.db.unembedded_chunk_count(embed_model) > 0)
         )
         if pending or needs_discovery or needs_cycles or needs_steps or needs_chunks:
             self._start_pipeline()
@@ -430,6 +435,7 @@ class MainWindow(QMainWindow):
 
         dialog = SettingsDialog(self.db, self)
         dialog.sources_changed.connect(self._on_sources_changed)
+        dialog.models_changed.connect(self._on_sources_changed)
         dialog.exec()
 
     def _on_sources_changed(self) -> None:
@@ -454,15 +460,27 @@ class MainWindow(QMainWindow):
         self._refresh_current()
         self.update()
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> bool:
         """백그라운드 스레드를 안전하게 세운다.
 
         실행 중인 QThread가 파괴되면 프로세스가 죽는다. 창이 닫힐 때뿐 아니라
         테스트처럼 closeEvent 없이 정리되는 경로에서도 불러야 한다.
         """
         self._tick.stop()
-        self.runner.stop()
+        runners = [self.runner]
+        for view in self.views.values():
+            for name in ("_runner", "_summaries", "_warmup"):
+                runner = getattr(view, name, None)
+                if runner is not None:
+                    runners.append(runner)
+        for runner in runners:
+            runner.stop()
+        return not any(runner.running for runner in runners)
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
-        self.shutdown()
+        if not self.shutdown():
+            event.ignore()
+            self.topbar.show_idle("진행 중인 작업을 마친 뒤 안전하게 닫습니다…")
+            QTimer.singleShot(250, self.close)
+            return
         super().closeEvent(event)

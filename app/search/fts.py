@@ -29,8 +29,8 @@ def escape_match(term: str) -> str:
     """
     parts = [p for p in term.split() if len(p) >= MIN_TRIGRAM_LEN]
     if not parts:
-        return f'"{term}"'
-    return " AND ".join(f'"{p}"' for p in parts)
+        return '"' + term.replace('"', '""') + '"'
+    return " AND ".join('"' + p.replace('"', '""') + '"' for p in parts)
 
 
 def escape_match_any(term: str) -> str:
@@ -44,8 +44,8 @@ def escape_match_any(term: str) -> str:
     """
     parts = [p for p in term.split() if len(p) >= MIN_TRIGRAM_LEN]
     if not parts:
-        return f'"{term}"'
-    return " OR ".join(f'"{p}"' for p in parts)
+        return '"' + term.replace('"', '""') + '"'
+    return " OR ".join('"' + p.replace('"', '""') + '"' for p in parts)
 
 
 def search_document_ids(db: Database, term: str, limit: int = 500) -> list[int]:

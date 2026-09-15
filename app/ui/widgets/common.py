@@ -644,6 +644,20 @@ class UnknownBlock(_WrapFrame):
         self.label.setText(f"⚠ {message}" if message else "")
 
 
+class _EmptyDetailLabel(WrapLabel):
+    """넓은 화면에서는 읽기 폭을 확보하고, 좁은 화면에서는 줄어든다."""
+
+    def sizeHint(self):  # noqa: N802
+        hint = super().sizeHint()
+        hint.setWidth(DETAIL_WIDTH)
+        return hint
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+
 class EmptyState(QWidget):
     """빈 상태. 무엇이 없는지와 다음에 할 일을 함께 보여준다."""
 
@@ -676,12 +690,12 @@ class EmptyState(QWidget):
             # 삐져나간다 — 가로 스크롤이 꺼져 있어 사용자에게는 문장이 그냥
             # 끊긴 것으로 보인다(실측으로 잡았다). 상한만 두고 접히는 높이는
             # WrapLabel에 맡긴다.
-            text = WrapLabel(detail)
+            text = _EmptyDetailLabel(detail)
             text.setObjectName("Muted")
             text.setWordWrap(True)
             text.setAlignment(Qt.AlignmentFlag.AlignHCenter)
             text.setMaximumWidth(DETAIL_WIDTH)
-            column.addWidget(text)
+            column.addWidget(text, alignment=Qt.AlignmentFlag.AlignHCenter)
             self._detail = text
 
         if action and on_action:

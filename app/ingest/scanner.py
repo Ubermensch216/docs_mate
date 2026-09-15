@@ -93,6 +93,7 @@ def scan_source(
         mtime = _iso(entry_stat.st_mtime)
         previous = known.get(text_path)
         if previous and previous["size"] == entry_stat.st_size and previous["fs_mtime"] == mtime:
+            db.mark_seen(previous["id"])
             stats.unchanged += 1
             if on_progress and stats.found % 200 == 0:
                 on_progress(stats.found, path.name)
@@ -117,14 +118,18 @@ def scan_source(
         else:
             stats.new += 1
 
-        db.upsert_document(source_id, fields)
+        with db.transaction():
+            if previous:
+                db.invalidate_document_analysis(previous["id"])
+            db.upsert_document(source_id, fields)
 
         if on_progress and stats.found % 100 == 0:
             on_progress(stats.found, path.name)
 
     # 사라진 원본은 지우지 않고 표시만 한다 (ING-008).
     gone = [row["id"] for text_path, row in known.items() if text_path not in seen]
-    if gone and not (should_stop and should_stop()):
+    # 탐색에 실패한 범위는 '삭제'로 판정할 수 없다. 접근을 복구한 뒤 다시 판단한다.
+    if gone and not stats.errors and not (should_stop and should_stop()):
         stats.missing = db.mark_missing(gone)
 
     db.audit(
@@ -140,7 +145,8 @@ def scan_source(
 
 def _walk(root: Path, user_excludes: list[str]) -> Iterator[tuple[Path, os.stat_result, str]]:
     """디렉터리를 훑는다. 접근 거부 같은 개별 오류는 격리한다 (ING-007)."""
-    for current, dirs, files in os.walk(root, onerror=lambda e: None):
+    walk_errors: list[OSError] = []
+    for current, dirs, files in os.walk(root, onerror=walk_errors.append):
         dirs[:] = [
             d for d in dirs
             if d not in EXCLUDE_DIRS
@@ -158,6 +164,8 @@ def _walk(root: Path, user_excludes: list[str]) -> Iterator[tuple[Path, os.stat_
                 yield path, path.stat(), ""
             except OSError as exc:
                 yield path, None, f"{path}: {exc.strerror or exc}"  # type: ignore[misc]
+    for exc in walk_errors:
+        yield Path(exc.filename or root), None, "폴더에 접근할 수 없습니다"  # type: ignore[misc]
 
 
 def _matches(name: str, patterns: list[str]) -> bool:
@@ -172,4 +180,4 @@ def _parse_excludes(excludes: str) -> list[str]:
 
 
 def _iso(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+    return datetime.fromtimestamp(timestamp).isoformat(timespec="microseconds")

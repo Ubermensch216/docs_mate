@@ -17,8 +17,31 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
+
+
+def pytest_configure(config):
+    # 사용자 TEMP의 예전 실행 권한에 의존하지 않고 테스트마다 격리한다.
+    root = Path(__file__).resolve().parents[1] / ".test_runs"
+    root.mkdir(exist_ok=True)
+    if not config.option.basetemp:
+        config.option.basetemp = str(root / f"tmp-{uuid4().hex[:12]}")
+
+
+@pytest.fixture(autouse=True)
+def release_closed_qt_objects():
+    yield
+    # 테스트는 app.exec() 없이 processEvents()만 부른다. 이 경우
+    # deleteLater 요청이 남아 다음 테마 변경이 닫힌 창들까지 다시 그린다.
+    from PySide6.QtCore import QCoreApplication, QEvent
+    app = QCoreApplication.instance()
+    if app is not None:
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 # "기본 프로그램으로 열기" 계열 명령. 이것만 막고 나머지 subprocess 사용
 # (test_crash_resume.py 가 앱을 직접 띄우는 등)은 그대로 통과시킨다.

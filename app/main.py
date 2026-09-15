@@ -24,6 +24,8 @@ from .db.registry import ProjectEntry
 from .ui import theme
 from .ui.shell import MainWindow
 from .ui.views.launcher import LauncherDialog
+from .core import diagnostics
+from . import __version__
 
 _LOGO_PATH = Path(__file__).parent / "ui" / "assets" / "logo.png"
 
@@ -57,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
 def _run(app: QApplication, entry: ProjectEntry, root: Path | None) -> ProjectEntry | None:
     """프로젝트 하나를 연다. 돌려주는 값이 있으면 그 프로젝트로 갈아탄다."""
     db = open_project_at(entry.path)
+    diagnostics.configure(db.path.parent / "logs")
+    sys.excepthook = diagnostics.exception_hook
+    diagnostics.record("app.start", version=__version__)
     db.set_meta("project_name", entry.name)
     registry.touch(entry.path, root)
     db.audit("app.start", detail=f"project={entry.name}")
@@ -80,6 +85,7 @@ def _run(app: QApplication, entry: ProjectEntry, root: Path | None) -> ProjectEn
     finally:
         disconnect()
         db.audit("app.stop")
+        diagnostics.record("app.stop")
         db.close()
     return switch_to[0] if switch_to else None
 

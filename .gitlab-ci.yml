@@ -1,0 +1,17 @@
+stages: [verify]
+windows-verify:
+  stage: verify
+  tags: [windows]
+  variables:
+    QT_QPA_PLATFORM: offscreen
+  script:
+    - py -3.14 -m venv .venv-ci
+    - ./.venv-ci/Scripts/python.exe -m pip install -r requirements.lock
+    - ./.venv-ci/Scripts/python.exe -m app.tools.make_fixtures
+    - ./.venv-ci/Scripts/python.exe -m pytest --junitxml=.test_runs/results.xml
+    - ./.venv-ci/Scripts/python.exe -m PyInstaller NunchiCoach.spec
+    - ./dist/NunchiCoach/NunchiCoach.exe selftest tests/fixtures/sample_tree
+  artifacts:
+    when: always
+    reports:
+      junit: .test_runs/results.xml

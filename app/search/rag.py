@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..ai.client import OllamaClient
+from ..ai.settings import project_client
 from ..ai.prompts_loader import render
 from ..ai.schemas import ASK_SCHEMA
 from ..db import Database, representative_predicate
@@ -126,8 +127,9 @@ def ask(db: Database, question: str, client: OllamaClient | None = None,
     question = question.strip()
     if not question:
         return Answer(question=question, text="", withheld=True, error="빈 질문입니다")
+    content_revision = db.get_meta("content_revision")
 
-    client = client or OllamaClient()
+    client = client or project_client(db, OllamaClient)
     health = client.health()
     if not health.embedding_ready:
         return Answer(
@@ -191,6 +193,9 @@ def ask(db: Database, question: str, client: OllamaClient | None = None,
 
     prompt, _version = render("ask", context=_format_context(context_rows), question=question)
     data, gen_error, raw = client.generate_json(prompt, ASK_SCHEMA, num_predict=GEN_TOKEN_BUDGET)
+    if db.get_meta("content_revision") != content_revision:
+        return Answer(question=question, text="", withheld=True,
+                      error="답변을 준비하는 동안 자료가 갱신되었습니다. 다시 질문해 주세요.")
 
     if data is None and raw:
         # 토큰 한도에 걸려 JSON이 중간에 잘렸을 수 있다 — 완성된 문장까지는

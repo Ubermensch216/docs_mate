@@ -39,6 +39,7 @@ a = Analysis(
     datas=[
         ('app/ai/prompts', 'app/ai/prompts'),
         ('app/db/schema.sql', 'app/db'),
+        ('app/ui/assets', 'app/ui/assets'),
     ],
     # 선 아이콘(app/ui/icons.py)은 QtSvg로 그린다. try/except로 감싸 놓아
     # 빠져도 죽지는 않지만, 빠지면 아이콘이 통째로 기호로 물러선다.

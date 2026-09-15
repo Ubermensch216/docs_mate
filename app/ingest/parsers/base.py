@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-PARSER_VERSION = "1"
+# v2: 재파싱 시 날짜·문서/조각 색인을 함께 갱신하는 계약으로 기존 자료도 재처리한다.
+PARSER_VERSION = "2"
 
 # 파싱 상태
 OK = "ok"                    # 본문 정상 추출

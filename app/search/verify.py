@@ -27,8 +27,8 @@ from typing import Any
 
 from ..core import korean
 
-_NUMBER = re.compile(r"\d[\d,.]*%?")
-_MIN_NUMBER_LEN = 2   # 한두 자리 순번("1분기"의 "1")까지 걸면 오탐이 잦다
+_NUMBER = re.compile(r"(?<!\d)\d+(?:,\d{3})*(?:\.\d+)?%?")
+_NEGATION = re.compile(r"아니(?:다|라|며|고|었)|않(?:다|는|았|습니다)|없(?:다|음|습|었)|불가|금지")
 # 실측 기준값이 아니라 임시값이다 — R1 평가셋으로 재조정 대상(rag_report).
 MIN_OVERLAP = 0.25
 
@@ -106,6 +106,10 @@ def verify_sentences(
             result.dropped.append(Dropped(text, "인용한 근거와 겹치는 말이 거의 없다"))
             continue
 
+        if _contradicts_polarity(text, cited_text):
+            result.dropped.append(Dropped(text, "인용한 근거의 부정 표현과 반대되는 문장이다"))
+            continue
+
         result.kept.append(VerifiedSentence(text=text, sources=valid_sources))
     return result
 
@@ -129,12 +133,26 @@ def _unsupported_numbers(text: str, cited_text: str) -> list[str]:
     그대로 두면 "820, 2분기 0"에서 '820,'을 통째로 숫자로 잡아 근거에 없다고
     판정한다 — 정상 문장이 계속 버려졌다. 뒤에 붙은 문장부호만 떼어 낸다.
     """
-    numbers = {
-        stripped
-        for n in _NUMBER.findall(text)
-        if len(stripped := korean.strip_punctuation(n)) >= _MIN_NUMBER_LEN
-    }
-    return sorted(n for n in numbers if n not in cited_text)
+    def canonical(number):
+        from decimal import Decimal
+        suffix = "%" if number.endswith("%") else ""
+        return (Decimal(number.rstrip("%").replace(",", "")), suffix)
+    supported = {canonical(n) for n in _NUMBER.findall(cited_text)}
+    return sorted({n for n in _NUMBER.findall(text) if canonical(n) not in supported})
+
+
+def _contradicts_polarity(text: str, cited_text: str) -> bool:
+    """거의 같은 문장을 긍정/부정으로 뒤집은 경우만 보수적으로 거른다.
+
+    일반적인 의미 검증기는 아니다. 다른 문장의 '없다' 때문에 정상 근거를
+    버리지 않도록 문장별로 비교하고, 같은 극성의 근거가 있으면 인정한다.
+    """
+    candidates = [part for part in re.split(r"(?<!\d)[.!?]\s*|\n+", cited_text)
+                  if part.strip() and korean.overlap_ratio(text, part) >= 0.8]
+    if not candidates:
+        return False
+    negative = bool(_NEGATION.search(text))
+    return all(bool(_NEGATION.search(part)) != negative for part in candidates)
 
 
 def _overlaps_enough(text: str, cited_text: str) -> bool:

@@ -57,7 +57,7 @@ def discover(
 ) -> Discovery:
     result = Discovery()
 
-    store = VectorStore.load(db.con)
+    store = VectorStore.load(db.con, model=client.embed_model if client else None)
     if store.size == 0:
         result.errors.append("의미 색인이 없습니다. 먼저 분석을 끝내세요.")
         return result
@@ -76,6 +76,8 @@ def discover(
     naming_ready = bool(client and client.health().generation_ready)
 
     for index, group in enumerate(grouping.clusters, start=1):
+        if client is not None and getattr(client, "cancelled", False):
+            break
         names = _filenames(db, group.doc_ids)
         tokens = common_tokens(names)
 

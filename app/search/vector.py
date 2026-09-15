@@ -49,10 +49,10 @@ class VectorStore:
 
     @classmethod
     def load(cls, con: sqlite3.Connection, model: str | None = None) -> "VectorStore":
-        sql = "SELECT doc_id, dim, vector FROM doc_embeddings"
+        sql = "SELECT e.doc_id, e.dim, e.vector FROM doc_embeddings e JOIN documents d ON d.id=e.doc_id WHERE d.missing_since IS NULL AND d.parse_status IN ('ok','partial')"
         params: tuple = ()
         if model:
-            sql += " WHERE model = ?"
+            sql += " AND e.model = ?"
             params = (model,)
         rows = con.execute(sql + " ORDER BY doc_id", params).fetchall()
         if not rows:

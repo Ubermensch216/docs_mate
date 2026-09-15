@@ -25,6 +25,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -38,6 +39,8 @@ from PySide6.QtWidgets import (
 )
 
 from ...ai import OllamaClient
+from ...ai.settings import model_names, project_client, save_models
+from ...jobs.ai_status import check_status
 from ...db import Database
 from .. import icons, theme
 from ..widgets import (
@@ -70,10 +73,13 @@ class SettingsDialog(QDialog):
     """
 
     sources_changed = Signal()      # 자료 폴더가 바뀌었다 — 다시 분석해야 한다
+    models_changed = Signal()
 
     def __init__(self, db: Database, parent: QWidget | None = None):
         super().__init__(parent)
         self.db = db
+        self._ai_checked = False
+        self._ai_status_task = None
         self.setWindowTitle("설정")
         self.setMinimumSize(760, 620)
 
@@ -123,6 +129,8 @@ class SettingsDialog(QDialog):
             return
         self.stack.setCurrentWidget(pane)
         self.nav.select(key)
+        if key == "system" and not self._ai_checked:
+            self._recheck_ai()
 
     def refresh(self) -> None:
         """세 갈래를 모두 다시 그린다.
@@ -384,42 +392,36 @@ class SettingsDialog(QDialog):
         head = QHBoxLayout()
         head.addWidget(section_title("로컬 AI"))
         head.addStretch(1)
-        recheck = QPushButton("다시 확인")
-        recheck.clicked.connect(self._recheck_ai)
-        head.addWidget(recheck)
+        self.ai_recheck = QPushButton("연결 확인")
+        self.ai_recheck.clicked.connect(self._recheck_ai)
+        head.addWidget(self.ai_recheck)
         card.body.addLayout(head)
-
-        client = OllamaClient()
-        health = client.health()
-        state = QHBoxLayout()
-        state.setSpacing(theme.SP_SM)
-        state.addWidget(Badge("연결됨" if health.ok else "연결 안 됨",
-                              "ok" if health.ok else "attention"))
-        state.addWidget(muted_label(f"{client.base_url}   ·   {health.message}",
-                                    wrap=False))
-        state.addStretch(1)
-        card.body.addLayout(state)
-
-        if not health.ok:
-            card.body.addWidget(
-                UnknownBlock(
-                    "AI 기능(요약·업무 분류·질문)은 쓸 수 없습니다. "
-                    "파일 조사·검색·중복 확인은 그대로 동작합니다."
-                )
-            )
-        else:
-            for label, model, ready in (
-                ("생성", client.gen_model, health.generation_ready),
-                ("임베딩", client.embed_model, health.embedding_ready),
-            ):
-                mark = "●" if ready else "○"
-                card.body.addWidget(
-                    muted_label(f"{mark} {label}   {model}" + ("" if ready else "   (없음)"))
-                )
-            profile = client.profile()
-            if profile:
-                card.body.addWidget(muted_label(profile.describe(), small=True))
-
+        self.ai_state = muted_label("시스템 화면을 열면 연결 상태를 확인합니다.")
+        self.ai_state.setAccessibleName("로컬 AI 연결 상태")
+        card.body.addWidget(self.ai_state)
+        self.gen_model = QComboBox()
+        self.embed_model = QComboBox()
+        for label, combo, value in zip(
+            ("답변·요약 모델", "문서 검색 모델"),
+            (self.gen_model, self.embed_model), model_names(self.db),
+        ):
+            combo.setEditable(True)
+            combo.addItem(value)
+            combo.setMinimumHeight(theme.CONTROL_H)
+            combo.setAccessibleName(label)
+            row = QVBoxLayout()
+            row.addWidget(muted_label(label, small=True))
+            row.addWidget(combo)
+            card.body.addLayout(row)
+        card.body.addWidget(muted_label(
+            "이 인수인계에서 사용할 설치된 모델을 선택하세요. "
+            "문서 검색 모델을 바꾸면 자료를 다시 준비하며, 그동안 질문을 사용할 수 없을 수 있습니다.", small=True))
+        self.ai_save = QPushButton("모델 설정 저장")
+        self.ai_save.setObjectName("Primary")
+        self.ai_save.clicked.connect(self._save_models)
+        card.body.addWidget(self.ai_save)
+        self.ai_feedback = muted_label("")
+        card.body.addWidget(self.ai_feedback)
         card.body.addWidget(
             muted_label(
                 "로컬 주소로만 연결합니다. 문서가 외부로 나가지 않습니다.", small=True
@@ -428,8 +430,48 @@ class SettingsDialog(QDialog):
         return card
 
     def _recheck_ai(self) -> None:
-        self.refresh()
-        self.go("system")
+        if self._ai_status_task is not None:
+            return
+        self._ai_checked = True
+        self._status_models = model_names(self.db)
+        self.ai_state.setText("연결을 확인하는 중입니다… 화면 설정은 계속 사용할 수 있습니다.")
+        self.ai_recheck.setEnabled(False)
+        self._ai_status_task = check_status(project_client(self.db, OllamaClient), self._on_ai_status)
+
+    def _on_ai_status(self, health) -> None:
+        self._ai_status_task = None
+        self.ai_recheck.setEnabled(True)
+        if self._status_models != model_names(self.db):
+            self._recheck_ai()
+            return
+        states = ("답변 준비됨" if health.generation_ready else "답변 모델 없음",
+                  "검색 준비됨" if health.embedding_ready else "검색 모델 없음")
+        self.ai_state.setText(" · ".join(states) if health.models else health.message)
+        for combo in (self.gen_model, self.embed_model):
+            chosen = combo.currentText()
+            combo.clear()
+            combo.addItems(list(dict.fromkeys([chosen, *health.models])))
+            combo.setCurrentText(chosen)
+
+    def _save_models(self) -> None:
+        if (self.gen_model.currentText().strip(), self.embed_model.currentText().strip()) == model_names(self.db):
+            self.ai_feedback.setText("현재 모델 설정이 이미 저장되어 있습니다.")
+            return
+        parent = self.parentWidget()
+        runners = [getattr(parent, "runner", None)]
+        for view in getattr(parent, "views", {}).values():
+            runners.extend([getattr(view, "_runner", None), getattr(view, "_summaries", None)])
+        if any(runner is not None and runner.running for runner in runners):
+            self.ai_feedback.setText("분석이나 질문이 끝난 뒤 모델 설정을 저장해 주세요.")
+            return
+        try:
+            rebuild = save_models(self.db, self.gen_model.currentText(), self.embed_model.currentText())
+        except ValueError as exc:
+            self.ai_feedback.setText(str(exc))
+            return
+        self.ai_feedback.setText("저장했습니다. 새 검색 모델로 자료를 다시 준비합니다." if rebuild else "모델 설정을 저장했습니다.")
+        self.models_changed.emit()
+        self._recheck_ai()
 
     def _storage_card(self) -> Card:
         card = Card(tone="static")

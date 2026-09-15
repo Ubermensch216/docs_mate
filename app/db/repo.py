@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import contextmanager
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,43 @@ class Database:
         if self._con is not None:
             self._con.close()
             self._con = None
+
+    @contextmanager
+    def transaction(self):
+        """자동 커밋 연결에서도 관련 변경을 한 묶음으로 완료한다."""
+        self.con.execute("SAVEPOINT repository_change")
+        try:
+            yield
+            self.con.execute("RELEASE repository_change")
+        except BaseException:
+            self.con.execute("ROLLBACK TO repository_change")
+            self.con.execute("RELEASE repository_change")
+            raise
+
+    def invalidate_document_analysis(self, doc_id: int) -> None:
+        """내용/파서 변경 시 자동 산출물을 버린다. 사람의 교정은 보존한다."""
+        with self.transaction():
+            task_ids = [r[0] for r in self.con.execute(
+                "SELECT task_id FROM task_docs WHERE doc_id=?", (doc_id,))]
+            for table in ("document_sections", "document_index", "document_dates",
+                          "doc_embeddings", "chunks"):
+                self.con.execute(f"DELETE FROM {table} WHERE doc_id=?", (doc_id,))
+            self.con.execute("DELETE FROM ai_document WHERE doc_id=? AND status='proposed'", (doc_id,))
+            self.con.execute("DELETE FROM jobs WHERE doc_id=?", (doc_id,))
+            self.con.execute(
+                "UPDATE documents SET eff_date=NULL,eff_date_kind=NULL,eff_precision=NULL,"
+                "eff_year=NULL,eff_month=NULL WHERE id=? AND date_decided_by!='user'", (doc_id,))
+            self.con.execute("UPDATE documents SET analysis_status='pending' WHERE id=?", (doc_id,))
+            for task_id in task_ids:
+                self.con.execute("DELETE FROM task_cycles WHERE task_id=? AND decided_by='ai'", (task_id,))
+                self.con.execute("DELETE FROM task_steps WHERE task_id=? AND decided_by='ai'", (task_id,))
+                self.con.execute("DELETE FROM task_reading WHERE task_id=?", (task_id,))
+                self.con.execute("DELETE FROM task_health WHERE task_id=?", (task_id,))
+            self.con.execute("DELETE FROM meta WHERE key IN ('cycles_checked','steps_checked','chunks_checked')")
+            self.set_meta("content_revision", str(int(self.get_meta("content_revision") or 0) + 1))
+
+    def mark_seen(self, doc_id: int) -> None:
+        self.con.execute("UPDATE documents SET missing_since=NULL,last_seen=datetime('now') WHERE id=?", (doc_id,))
 
     def __enter__(self) -> "Database":
         return self

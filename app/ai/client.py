@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
+import threading
 from typing import Any
 from urllib.parse import urlparse
 
@@ -80,12 +82,48 @@ class OllamaClient:
         self.base_url = _require_loopback(base_url)
         self.gen_model = gen_model
         self.embed_model = embed_model
+        self._cancelled = threading.Event()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def _request(self, method: str, endpoint: str, *, timeout: float, **kwargs):
+        """동기 호출 인터페이스를 유지하면서 워커의 통신을 취소한다."""
+        return asyncio.run(self._request_async(method, endpoint, timeout=timeout, **kwargs))
+
+    async def _request_async(self, method: str, endpoint: str, *, timeout: float, **kwargs):
+        if self.cancelled:
+            raise httpx.RequestError("요청 취소됨")
+        # 기관 PC의 환경 프록시를 따라 문서를 외부로 보내지 않는다.
+        async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=timeout) as client:
+            request = asyncio.create_task(client.request(method, f"{self.base_url}{endpoint}", **kwargs))
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            try:
+                while not request.done():
+                    if self.cancelled:
+                        raise httpx.RequestError("요청 취소됨")
+                    if loop.time() >= deadline:
+                        raise httpx.TimeoutException("응답 시간 초과")
+                    await asyncio.wait({request}, timeout=0.1)
+                return await request
+            finally:
+                if not request.done():
+                    request.cancel()
+                    try:
+                        await request
+                    except asyncio.CancelledError:
+                        pass
 
     # ── 상태 ────────────────────────────────────────────────────────
     def health(self) -> Health:
         """연결과 모델 설치 여부를 확인한다. 절대 예외를 던지지 않는다."""
         try:
-            response = httpx.get(f"{self.base_url}/api/tags", timeout=CONNECT_TIMEOUT)
+            response = self._request("GET", "/api/tags", timeout=CONNECT_TIMEOUT)
             response.raise_for_status()
             names = [m["name"] for m in response.json().get("models", [])]
         except httpx.ConnectError:
@@ -116,8 +154,8 @@ class OllamaClient:
     def profile(self, model: str | None = None) -> ModelProfile | None:
         target = model or self.gen_model
         try:
-            response = httpx.post(
-                f"{self.base_url}/api/show", json={"model": target}, timeout=30.0
+            response = self._request(
+                "POST", "/api/show", json={"model": target}, timeout=30.0
             )
             response.raise_for_status()
             data = response.json()
@@ -162,8 +200,8 @@ class OllamaClient:
             "options": {"temperature": temperature, "num_predict": num_predict},
         }
         try:
-            response = httpx.post(
-                f"{self.base_url}/api/generate", json=payload, timeout=GENERATE_TIMEOUT
+            response = self._request(
+                "POST", "/api/generate", json=payload, timeout=GENERATE_TIMEOUT
             )
             response.raise_for_status()
             body = response.json()
@@ -190,8 +228,8 @@ class OllamaClient:
         if not texts:
             return [], None
         try:
-            response = httpx.post(
-                f"{self.base_url}/api/embed",
+            response = self._request(
+                "POST", "/api/embed",
                 json={"model": self.embed_model, "input": texts},
                 timeout=EMBED_TIMEOUT,
             )
@@ -212,15 +250,16 @@ class OllamaClient:
 
 
 def _has_model(installed: list[str], wanted: str) -> bool:
-    """'gemma4:e2b'와 'gemma4:e2b-instruct' 같은 태그 차이를 흡수한다."""
-    base = wanted.split(":")[0]
-    return any(name == wanted or name.split(":")[0] == base for name in installed)
+    """생략된 태그는 latest로만 해석한다. 다른 크기·양자화는 같은 모델이 아니다."""
+    def canonical(name):
+        return name if ":" in name.rsplit("/", 1)[-1] else name + ":latest"
+    return any(canonical(name) == canonical(wanted) for name in installed)
 
 
 def _require_loopback(base_url: str) -> str:
     parsed = urlparse(base_url)
     host = parsed.hostname or ""
-    if host not in LOOPBACK:
+    if host not in LOOPBACK or parsed.scheme not in {"http", "https"} or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         raise ValueError(
             f"로컬 주소만 허용합니다 (요청: {base_url}). "
             "업무 자료가 외부로 나가지 않도록 강제하는 제약입니다."

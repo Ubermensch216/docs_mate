@@ -101,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     _print_details("실패·거부 사유", reasons)
     _print_details("경고", notes)
     _print_gate(stats)
+    if args.strict and any(status not in (OK, PARTIAL) and count
+                           for counts in stats.values() for status, count in counts.items()):
+        return 1
     return 0
 
 
@@ -207,6 +210,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=None, help="확장자별 표본 상한")
     p.add_argument("--ext", nargs="*", default=None, help="특정 확장자만 (예: .hwp .pdf)")
     p.add_argument("--verbose", action="store_true", help="파일별 결과 출력")
+    p.add_argument("--strict", action="store_true", help="본문 추출 실패가 있으면 오류 코드로 종료")
     args = p.parse_args(argv)
     if args.ext:
         args.ext = {e if e.startswith(".") else f".{e}" for e in (x.lower() for x in args.ext)}

@@ -12,7 +12,9 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
 from ..ai import OllamaClient, analyze
+from ..ai.settings import project_client
 from ..db import Database
+from ..core import diagnostics
 
 
 class SummaryWorker(QObject):
@@ -24,26 +26,41 @@ class SummaryWorker(QObject):
         super().__init__()
         self._db_path = Path(db_path)
         self._doc_id = doc_id
+        self._client = None
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+        if self._client is not None:
+            self._client.cancel()
 
     def run(self) -> None:
         db = Database(self._db_path)
         try:
             row = db.con.execute(
-                "SELECT body FROM document_index WHERE doc_id = ?", (self._doc_id,)
+                "SELECT i.body, d.hash FROM document_index i JOIN documents d ON d.id=i.doc_id WHERE doc_id = ?", (self._doc_id,)
             ).fetchone()
             if row is None or not row["body"]:
                 self.done.emit(self._doc_id, "", "읽어 둔 본문이 없습니다")
                 return
 
-            client = OllamaClient()
+            client = self._client = project_client(db, OllamaClient)
+            if self._cancelled:
+                client.cancel()
             health = client.health()
             if not health.generation_ready:
                 self.done.emit(self._doc_id, "", health.message)
                 return
-
             result = analyze.summarize(client, self._doc_id, row["body"])
+            if self._cancelled:
+                self.done.emit(self._doc_id, "", "요약을 취소했습니다.")
+                return
             if not result.ok:
                 self.done.emit(self._doc_id, "", result.error or "요약 실패")
+                return
+            current = db.document(self._doc_id)
+            if current is None or current["hash"] != row["hash"]:
+                self.done.emit(self._doc_id, "", "요약 중 자료가 갱신되었습니다. 다시 시도해 주세요.")
                 return
 
             db.save_analysis(
@@ -56,6 +73,7 @@ class SummaryWorker(QObject):
             db.audit("ai.summarize", str(self._doc_id), result.prompt_version, "ok")
             self.done.emit(self._doc_id, result.summary or "", "")
         except Exception as exc:  # 워커가 조용히 죽으면 버튼이 영원히 돈다
+            diagnostics.record("summary.error", exc, doc_id=self._doc_id)
             self.done.emit(self._doc_id, "", f"{type(exc).__name__}: {exc}")
         finally:
             db.close()
@@ -81,7 +99,7 @@ class SummaryRunner(QObject):
         return self._thread is not None and self._thread.isRunning()
 
     def start(self, doc_id: int) -> bool:
-        if self.running:
+        if self._thread is not None:
             return False
         self._thread = QThread()
         self._worker = SummaryWorker(self._db_path, doc_id)
@@ -92,6 +110,8 @@ class SummaryRunner(QObject):
         return True
 
     def stop(self, wait_ms: int = 5000) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(wait_ms)

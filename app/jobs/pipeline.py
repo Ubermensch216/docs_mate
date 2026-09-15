@@ -19,8 +19,10 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
 from ..ai import OllamaClient
+from ..ai.settings import project_client
 from ..ai.discover import discover
 from ..core import dating, timeline
+from ..core import diagnostics
 from ..core.chunking import build_chunks
 from ..core.labeling import label_document
 from ..db import Database
@@ -80,9 +82,12 @@ class Pipeline(QObject):
         super().__init__(parent)
         self._db_path = Path(db_path)
         self._stop = False
+        self._client = None
 
     def stop(self) -> None:
         self._stop = True
+        if self._client is not None:
+            self._client.cancel()
 
     def _stopped(self) -> bool:
         return self._stop
@@ -92,6 +97,7 @@ class Pipeline(QObject):
         db = Database(self._db_path)
         try:
             db.audit("pipeline.start")
+            diagnostics.record("pipeline.start")
             self._scan(db)
             if not self._stop:
                 self._hash(db)
@@ -110,7 +116,9 @@ class Pipeline(QObject):
             if not self._stop:
                 self._chunks(db)
             db.audit("pipeline.stop", result="cancelled" if self._stop else "completed")
+            diagnostics.record("pipeline.stop")
         except Exception as exc:  # 워커가 조용히 죽으면 사용자는 영문을 모른다
+            diagnostics.record("pipeline.error", exc)
             import traceback
 
             db.audit("pipeline.error", detail=type(exc).__name__, result="failed")
@@ -196,6 +204,10 @@ class Pipeline(QObject):
             if self._stop:
                 break
             result = _parse_with_retry(row["path"])
+
+            if result.ok:
+                # 파서 판본 변경으로 재처리한 문서도 옛 질문 조각을 남기면 안 된다.
+                db.invalidate_document_analysis(row["id"])
 
             db.update_document(
                 row["id"],
@@ -321,7 +333,7 @@ class Pipeline(QObject):
 
         Ollama가 없으면 조용히 건너뛴다 — AI는 단일 장애점이 아니다.
         """
-        client = OllamaClient()
+        client = self._client = project_client(db, OllamaClient)
         health = client.health()
         if not health.embedding_ready:
             self.stage_done.emit(
@@ -381,7 +393,7 @@ class Pipeline(QObject):
             )
             return
 
-        client = OllamaClient()
+        client = self._client = project_client(db, OllamaClient)
         report = StageReport(STAGE_DISCOVER)
 
         def progress(done: int, total: int, label: str) -> None:
@@ -505,7 +517,7 @@ class Pipeline(QObject):
         쓴다(core/chunking.py). Ollama가 없으면 조용히 건너뛴다 — AI는
         단일 장애점이 아니다.
         """
-        client = OllamaClient()
+        client = self._client = project_client(db, OllamaClient)
         health = client.health()
         if not health.embedding_ready:
             self.stage_done.emit(
@@ -619,7 +631,7 @@ class PipelineRunner(QObject):
         return self._thread is not None and self._thread.isRunning()
 
     def start(self) -> None:
-        if self.running:
+        if self._thread is not None:
             return
         self._thread = QThread()
         self._pipeline = Pipeline(self._db_path)

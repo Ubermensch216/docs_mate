@@ -1,0 +1,31 @@
+................................ss...................................... [  7%]
+........................................................s............... [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 31%]
+........................................................................ [ 39%]
+........................................................................ [ 47%]
+...................................................................s.... [ 55%]
+........................................................................ [ 63%]
+........................................................................ [ 71%]
+........................................................................ [ 79%]
+........................................................................ [ 87%]
+........................................................................ [ 95%]
+..........................................                               [100%]
+============================== warnings summary ===============================
+tests/test_task_cards.py::test_card_emits_task_id_when_clicked
+  D:\Dev\docs_mate\tests\test_task_cards.py:118: DeprecationWarning: Function: 'QMouseEvent.QMouseEvent(QEvent.Type type, const QPointF &localPos, Qt.MouseButton button, QFlags<Qt.MouseButton> buttons, QFlags<Qt.KeyboardModifier> modifiers, const QPointingDevice *device)' is marked as deprecated, please check the documentation for more information.
+    event = QMouseEvent(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================ slowest 10 durations =============================
+12.10s call     tests/test_ui_smoke.py::test_settings_text_size_has_three_steps_and_rescales
+10.33s setup    tests/test_ui_smoke.py::test_settings_theme_switches_the_palette_and_persists
+9.72s call     tests/test_ui_smoke.py::test_status_colors_follow_the_theme
+9.46s call     tests/test_ui_smoke.py::test_settings_theme_switches_the_palette_and_persists
+9.42s call     tests/test_crash_resume.py::test_force_killed_scan_leaves_a_valid_database_and_resumes
+8.93s teardown tests/test_ui_smoke.py::test_settings_migrates_the_old_large_text_setting
+8.84s teardown tests/test_ui_smoke.py::test_settings_theme_switches_the_palette_and_persists
+8.67s call     tests/test_pipeline.py::test_changed_file_is_reprocessed
+8.53s call     tests/test_pipeline.py::test_missing_original_is_flagged_not_deleted
+8.52s call     tests/test_pipeline.py::test_second_run_is_idempotent
+902 passed, 4 skipped, 1 warning in 295.81s (0:04:55)

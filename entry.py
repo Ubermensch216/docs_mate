@@ -20,9 +20,17 @@ import sys
 
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "selftest":
+        from pathlib import Path
+        import app
+        root = Path(app.__file__).parent
+        required = [root / "ui/assets/logo.png", root / "db/schema.sql",
+                    root / "ai/prompts/ask.md", root / "ai/prompts/summarize.md"]
+        if any(not path.is_file() for path in required):
+            print("Selftest failed: required application resources are missing.", file=sys.stderr)
+            return 1
         from app.tools.parse_report import main as parse_report_main
 
-        return parse_report_main(sys.argv[2:])
+        return parse_report_main([*sys.argv[2:], "--strict"])
 
     from app.main import main as app_main
 
