@@ -1,0 +1,30 @@
+{
+  "date": "2026-09-15",
+  "source_commit": "336a6bd",
+  "method": "Current PySide6 widgets, offscreen capture, no UI mocks",
+  "data": "make_fixtures synthetic corpus",
+  "counts": {
+    "total": 77,
+    "documents": 77,
+    "parsed": 77,
+    "parse_pending": 0,
+    "parse_failed": 0,
+    "analyzed": 0,
+    "missing": 0,
+    "dated": 77,
+    "duplicate_extra": 7,
+    "tasks": 6,
+    "embedded": 77,
+    "summarized": 0,
+    "in_task": 75,
+    "chunks": 138,
+    "chunks_embedded": 138,
+    "cycles_found": 6
+  },
+  "question_answered": false,
+  "viewport": [
+    1440,
+    1080
+  ],
+  "font": "Malgun Gothic with Segoe UI symbol fallback"
+}
